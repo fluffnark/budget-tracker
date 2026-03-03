@@ -1,0 +1,26 @@
+# Decisions
+
+- **Single-user bootstrap**: The first successful login auto-creates the single `owner` record if none exists.
+- **Session auth**: Auth uses a signed cookie containing the owner id. Cookie is `httpOnly` and `SameSite=Lax`.
+- **Timestamps**: All stored timestamps are UTC.
+- **Sync overlap**: Incremental syncs overlap the previous 7 days to capture late edits.
+- **Mock mode**: If `SIMPLEFIN_MOCK=1`, network calls are disabled and fixture data is used instead.
+- **Transfer pairing**: A transaction can be paired at most once; auto-confirm threshold is 0.85.
+- **Fallback key for local test/dev**: If `MASTER_KEY` is missing, backend uses a deterministic local fallback and marks this as dev-only behavior.
+- **Pending fingerprint**: Reconciliation fingerprint excludes posted date; date tolerance is handled by a near-date query window.
+- **Scheduler config persistence**: Daily sync schedule is stored in `app_settings` and can be updated from `/settings`.
+- **secrets.json handling**: `secrets.json` is ignored by git and not loaded automatically by the app.
+- **Port configurability**: Docker host ports are configurable via `DB_PORT`, `BACKEND_PORT`, and `FRONTEND_PORT` while preserving localhost-only binding defaults.
+- **Frontend API transport**: Frontend defaults to same-origin `/api` calls and uses Vite proxy to backend to reduce browser extension/CORS interference on local hosts.
+- **SimpleFIN setup helper**: `scripts/setup_simplefin_from_secrets.sh` reads `simplefin_token` from `secrets.json` for local bootstrap; token values are never printed.
+- **Rule application semantics**: Rule create responses return `match_count` as the number of transactions whose classification changed after deterministic re-evaluation of priority-ordered active rules.
+- **Manual override protection**: Setting `category_id` from transaction edit marks `manual_category_override=true`; rule application skips these rows unless user explicitly clears the category back to null.
+- **Hierarchical selector UX**: Category pickers use full-path labels (`Parent > Child`) with native type-ahead and optional text filtering for search context.
+- **Section navigation UX**: Transactions, Analytics, Categories, and Settings use a left-side jump menu with scrollspy and per-page collapse state persisted in local storage.
+- **Auto-categorization v1 heuristic**: Suggestions combine rule matches, merchant/description history ratios, and lightweight token cosine similarity over normalized descriptions.
+- **Auto-categorization safety**: Apply endpoint only writes to uncategorized transactions without manual overrides and enforces a confidence threshold.
+- **Auto-categorization rollout**: Feature is gated by `AUTO_CATEGORIZATION` (default `0`) and hidden/disabled in UI when off.
+- **Auto-categorization transfer policy**: Suggestions and apply skip transfer-linked transactions by default unless explicitly enabled.
+- **Primary workflow consolidation**: `/categorize` is the single primary transaction editing workflow; `/transactions` is kept as a redirect alias for compatibility.
+- **SimpleFIN account visibility**: `/api/accounts` defaults to active accounts only (`include_inactive=false`) to hide stale/mock accounts after source changes; sync marks missing SimpleFIN provider accounts inactive.
+- **Test DB isolation**: Backend tests must run only against a database name ending in `_test`; tests fail fast on unsafe DB names to prevent live-data damage.

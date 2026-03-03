@@ -1,0 +1,31 @@
+{
+  "accounts": [
+    {
+      "id": "slfcu-checking-001",
+      "name": "SLFCU Checking",
+      "type": "checking",
+      "currency": "USD",
+      "institution": {"name": "Sandia Laboratory Federal Credit Union"},
+      "balance": {"current": 3250.44, "available": 3150.21, "as_of": "2026-02-21T12:00:00Z"},
+      "transactions": [
+        {"id": "chk-1001", "posted": "2026-02-18", "amount": -125.00, "description": "UTILITY ELECTRIC PAYMENT", "pending": false},
+        {"id": "chk-1002", "posted": "2026-02-19", "amount": -840.25, "description": "CITI CARD PAYMENT", "pending": false},
+        {"id": "chk-1003", "posted": "2026-02-20", "amount": 2500.00, "description": "PAYROLL DEPOSIT", "pending": false},
+        {"id": "chk-1004", "posted": "2026-02-21", "amount": -42.11, "description": "GROCERY STORE", "pending": true}
+      ]
+    },
+    {
+      "id": "citi-cc-001",
+      "name": "Citi Double Cash",
+      "type": "credit",
+      "currency": "USD",
+      "institution": {"name": "Citi"},
+      "balance": {"current": -1220.10, "available": null, "as_of": "2026-02-21T12:00:00Z"},
+      "transactions": [
+        {"id": "cc-2001", "posted": "2026-02-19", "amount": 840.25, "description": "PAYMENT RECEIVED", "pending": false},
+        {"id": "cc-2002", "posted": "2026-02-20", "amount": -18.99, "description": "STREAMING SERVICE", "pending": false},
+        {"id": "cc-2003", "posted": "2026-02-21", "amount": -74.35, "description": "GAS STATION", "pending": true}
+      ]
+    }
+  ]
+}
