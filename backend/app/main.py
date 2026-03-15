@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.orm import Session
@@ -24,7 +24,6 @@ from app.models import (
     Merchant,
     Owner,
     Transaction,
-    Transfer,
 )
 from app.scheduler import (
     schedule_daily_sync,
@@ -34,6 +33,18 @@ from app.scheduler import (
 )
 from app.schemas import (
     AccountResponse,
+    AuthSetupRequest,
+    AuthStatusResponse,
+    AdvisorEmailPreviewRequest,
+    AdvisorEmailPreviewResponse,
+    AdvisorEmailSendRequest,
+    AdvisorEmailSendResponse,
+    AdvisorReportGenerateRequest,
+    AdvisorReportGenerateResponse,
+    BudgetMonthPatchRequest,
+    BudgetMonthResponse,
+    BudgetPeriodResponse,
+    BudgetRecurringResponse,
     CategorizationApplyRequest,
     CategorizationApplyResponse,
     CategorizationImportLLMRequest,
@@ -48,6 +59,7 @@ from app.schemas import (
     ExportResponse,
     LoginRequest,
     LoginResponse,
+    PasswordChangeRequest,
     RuleCreateRequest,
     RuleCreateResponse,
     RulePreviewRequest,
@@ -59,11 +71,26 @@ from app.schemas import (
     SyncRunRequest,
     TransactionPatchRequest,
     TransactionResponse,
-    TransferPatchRequest,
-    TransferResponse,
 )
-from app.security import create_session_cookie, encrypt_access_url, hash_password, verify_password
+from app.services.advisor_reports import (
+    build_advisor_email,
+    generate_advisor_bundle,
+    send_advisor_email,
+)
+from app.security import (
+    create_session_cookie,
+    encrypt_access_url,
+    hash_password,
+    read_session_cookie,
+    verify_password,
+)
 from app.services.auto_categorization import apply_suggestions, suggest_for_range
+from app.services.budgeting import (
+    get_budget_month_snapshot,
+    get_budget_period_summary,
+    get_recurring_payment_candidates,
+    save_budget_month_snapshot,
+)
 from app.services.categorization_suggest import suggest_categories
 from app.services.exporter import build_llm_export
 from app.services.email_reports import send_monthly_email_report, set_smtp_password
@@ -81,7 +108,6 @@ from app.services.reports import (
 from app.services.rules import ProposedRule, apply_new_rule, preview_rule_matches
 from app.services.simplefin import SimplefinError, claim_access_url
 from app.services.sync_progress import complete, fail, snapshot, start, update
-from app.services.transfers import list_transfers
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
@@ -123,23 +149,87 @@ def health() -> dict:
     return {"status": "ok", "mock_mode": settings.simplefin_mock}
 
 
+def _auth_status_payload(
+    db: Session,
+    *,
+    owner: Owner | None = None,
+    session_cookie: str | None = None,
+) -> AuthStatusResponse:
+    resolved_owner = owner or db.execute(select(Owner).limit(1)).scalar_one_or_none()
+    connection = db.execute(
+        select(Connection).where(Connection.kind == "simplefin").limit(1)
+    ).scalar_one_or_none()
+    authenticated = False
+    if session_cookie:
+        owner_id = read_session_cookie(session_cookie)
+        authenticated = bool(
+            owner_id and resolved_owner is not None and resolved_owner.id == owner_id
+        )
+    return AuthStatusResponse(
+        is_setup=resolved_owner is not None,
+        is_authenticated=authenticated,
+        owner_email=resolved_owner.email if resolved_owner else None,
+        simplefin_connected=connection is not None,
+        simplefin_status=connection.status if connection else None,
+    )
+
+
+def _validate_new_password(password: str) -> str:
+    candidate = password.strip()
+    if len(candidate) < 10:
+        raise HTTPException(status_code=400, detail="Password must be at least 10 characters")
+    return candidate
+
+
+@app.get("/api/auth/status", response_model=AuthStatusResponse)
+def auth_status(
+    session: str | None = Cookie(default=None),
+    db: Session = Depends(get_db),
+) -> AuthStatusResponse:
+    return _auth_status_payload(db, session_cookie=session)
+
+
+@app.post("/api/auth/setup", response_model=LoginResponse)
+def setup_owner(
+    payload: AuthSetupRequest, response: Response, db: Session = Depends(get_db)
+) -> LoginResponse:
+    existing = db.execute(select(Owner).limit(1)).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Initial setup already completed")
+
+    email = payload.email.strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+    password = _validate_new_password(payload.password)
+
+    owner = Owner(id=1, email=email, password_hash=hash_password(password))
+    db.add(owner)
+    db.commit()
+    db.refresh(owner)
+
+    cookie = create_session_cookie(owner.id)
+    response.set_cookie(
+        key="session",
+        value=cookie,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=60 * 60 * 24 * 30,
+    )
+    return LoginResponse(email=owner.email)
+
+
 @app.post("/api/auth/login", response_model=LoginResponse)
 def login(
     payload: LoginRequest, response: Response, db: Session = Depends(get_db)
 ) -> LoginResponse:
     owner = db.execute(select(Owner).limit(1)).scalar_one_or_none()
     if owner is None:
-        owner = Owner(
-            id=1, email=payload.email.strip().lower(), password_hash=hash_password(payload.password)
-        )
-        db.add(owner)
-        db.commit()
-        db.refresh(owner)
-    else:
-        if owner.email != payload.email.strip().lower() or not verify_password(
-            payload.password, owner.password_hash
-        ):
-            raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=409, detail="Initial setup required")
+    if owner.email != payload.email.strip().lower() or not verify_password(
+        payload.password, owner.password_hash
+    ):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
     cookie = create_session_cookie(owner.id)
     response.set_cookie(
@@ -159,6 +249,19 @@ def logout(response: Response) -> dict:
     return {"ok": True}
 
 
+@app.post("/api/auth/change-password")
+def change_password(
+    payload: PasswordChangeRequest,
+    owner: Owner = Depends(get_current_owner),
+    db: Session = Depends(get_db),
+) -> dict:
+    if not verify_password(payload.current_password, owner.password_hash):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    owner.password_hash = hash_password(_validate_new_password(payload.new_password))
+    db.commit()
+    return {"ok": True}
+
+
 @app.get("/api/accounts", response_model=list[AccountResponse])
 def get_accounts(
     include_inactive: bool = False,
@@ -168,7 +271,7 @@ def get_accounts(
     latest_balance_subq = (
         select(
             BalanceSnapshot.account_id,
-            func.max(BalanceSnapshot.captured_at).label("max_captured"),
+            func.max(BalanceSnapshot.id).label("latest_snapshot_id"),
         )
         .group_by(BalanceSnapshot.account_id)
         .subquery()
@@ -184,7 +287,7 @@ def get_accounts(
             BalanceSnapshot,
             and_(
                 BalanceSnapshot.account_id == Account.id,
-                BalanceSnapshot.captured_at == latest_balance_subq.c.max_captured,
+                BalanceSnapshot.id == latest_balance_subq.c.latest_snapshot_id,
             ),
         )
         .outerjoin(Connection, Connection.kind == "simplefin")
@@ -266,7 +369,12 @@ def get_transactions(
     if not include_pending:
         query = query.where(Transaction.is_pending.is_(False))
     if not include_transfers:
-        query = query.where(Transaction.transfer_id.is_(None))
+        query = query.where(
+            and_(
+                Transaction.transfer_id.is_(None),
+                or_(Category.system_kind.is_(None), Category.system_kind != "transfer"),
+            )
+        )
 
     rows = db.execute(query.order_by(desc(Transaction.posted_at)).limit(limit)).all()
 
@@ -567,18 +675,74 @@ def get_yearly_report(
     )
 
 
+@app.get("/api/budget/month", response_model=BudgetMonthResponse)
+def get_budget_month(
+    month: date,
+    _: Owner = Depends(get_current_owner),
+    db: Session = Depends(get_db),
+) -> BudgetMonthResponse:
+    return BudgetMonthResponse.model_validate(get_budget_month_snapshot(db, month))
+
+
+@app.put("/api/budget/month", response_model=BudgetMonthResponse)
+def put_budget_month(
+    payload: BudgetMonthPatchRequest,
+    _: Owner = Depends(get_current_owner),
+    db: Session = Depends(get_db),
+) -> BudgetMonthResponse:
+    return BudgetMonthResponse.model_validate(
+        save_budget_month_snapshot(
+            db,
+            month=payload.month_start,
+            income_target=payload.income_target,
+            starting_cash=payload.starting_cash,
+            planned_savings=payload.planned_savings,
+            leftover_strategy=payload.leftover_strategy,
+            rows=[item.model_dump() for item in payload.rows],
+        )
+    )
+
+
+@app.get("/api/budget/period", response_model=BudgetPeriodResponse)
+def get_budget_period(
+    period: str = Query(default="monthly"),
+    anchor: date | None = None,
+    _: Owner = Depends(get_current_owner),
+    db: Session = Depends(get_db),
+) -> BudgetPeriodResponse:
+    if period not in {"weekly", "monthly", "yearly"}:
+        raise HTTPException(status_code=400, detail="Unsupported budget period")
+    resolved_anchor = anchor or datetime.now().date()
+    return BudgetPeriodResponse.model_validate(
+        get_budget_period_summary(db, period=period, anchor=resolved_anchor)
+    )
+
+
+@app.get("/api/budget/recurring", response_model=BudgetRecurringResponse)
+def get_budget_recurring(
+    anchor: date | None = None,
+    _: Owner = Depends(get_current_owner),
+    db: Session = Depends(get_db),
+) -> BudgetRecurringResponse:
+    resolved_anchor = anchor or datetime.now().date()
+    return BudgetRecurringResponse.model_validate(
+        get_recurring_payment_candidates(db, anchor=resolved_anchor)
+    )
+
+
 @app.get("/api/analytics/sankey", response_model=SankeyResponse)
 def get_sankey(
     start: date,
     end: date,
     include_pending: bool = True,
     include_transfers: bool = False,
-    mode: str = Query(default="account_to_category"),
+    mode: str = Query(default="account_to_grouped_category"),
     category_id: int | None = None,
     _: Owner = Depends(get_current_owner),
     db: Session = Depends(get_db),
 ) -> SankeyResponse:
     if mode not in {
+        "account_to_grouped_category",
         "account_to_category",
         "category_to_account",
         "income_hub_outcomes",
@@ -784,32 +948,6 @@ def import_categorization_from_llm(
     )
 
 
-@app.get("/api/transfers", response_model=list[TransferResponse])
-def get_transfers(
-    _: Owner = Depends(get_current_owner), db: Session = Depends(get_db)
-) -> list[TransferResponse]:
-    transfers = list_transfers(db)
-    return [
-        TransferResponse.model_validate(transfer, from_attributes=True) for transfer in transfers
-    ]
-
-
-@app.patch("/api/transfers/{transfer_id}", response_model=TransferResponse)
-def patch_transfer(
-    transfer_id: int,
-    payload: TransferPatchRequest,
-    _: Owner = Depends(get_current_owner),
-    db: Session = Depends(get_db),
-) -> TransferResponse:
-    transfer = db.execute(select(Transfer).where(Transfer.id == transfer_id)).scalar_one_or_none()
-    if not transfer:
-        raise HTTPException(status_code=404, detail="Transfer not found")
-    transfer.status = payload.status
-    db.commit()
-    db.refresh(transfer)
-    return TransferResponse.model_validate(transfer, from_attributes=True)
-
-
 @app.get("/api/export/llm", response_model=ExportResponse)
 def export_llm(
     start: date,
@@ -965,6 +1103,105 @@ def send_email_report_now(
 ) -> EmailReportSendResponse:
     result = send_monthly_email_report(db, force_send=True)
     return EmailReportSendResponse(**result)
+
+
+@app.post("/api/advisor/report/generate", response_model=AdvisorReportGenerateResponse)
+def generate_advisor_report(
+    payload: AdvisorReportGenerateRequest,
+    _: Owner = Depends(get_current_owner),
+    db: Session = Depends(get_db),
+) -> AdvisorReportGenerateResponse:
+    bundle = generate_advisor_bundle(
+        db,
+        days=payload.days,
+        end_date=payload.end_date,
+        include_pending=payload.include_pending,
+        include_transfers=payload.include_transfers,
+        hash_merchants=payload.hash_merchants,
+        round_amounts=payload.round_amounts,
+    )
+    return AdvisorReportGenerateResponse(
+        start=bundle.start.isoformat(),
+        end=bundle.end.isoformat(),
+        days=bundle.days,
+        stats=bundle.stats,
+        charts=bundle.charts,
+        scrubbed_payload=bundle.scrubbed_payload,
+        prompt_markdown=bundle.prompt_markdown,
+    )
+
+
+@app.post("/api/advisor/report/email/preview", response_model=AdvisorEmailPreviewResponse)
+def preview_advisor_email(
+    payload: AdvisorEmailPreviewRequest,
+    _: Owner = Depends(get_current_owner),
+    db: Session = Depends(get_db),
+) -> AdvisorEmailPreviewResponse:
+    bundle = generate_advisor_bundle(
+        db,
+        days=payload.days,
+        end_date=payload.end_date,
+        include_pending=payload.include_pending,
+        include_transfers=payload.include_transfers,
+        hash_merchants=payload.hash_merchants,
+        round_amounts=payload.round_amounts,
+    )
+    email_parts = build_advisor_email(bundle=bundle, advisor_response=payload.advisor_response)
+    recipients = (
+        payload.recipients
+        if payload.recipients is not None
+        else _read_settings(db).email_report_recipients
+    )
+    return AdvisorEmailPreviewResponse(
+        subject=email_parts["subject"],
+        recipients=recipients,
+        markdown_body=email_parts["markdown"],
+        html_body=email_parts["html"],
+        start=bundle.start.isoformat(),
+        end=bundle.end.isoformat(),
+        days=bundle.days,
+        stats=bundle.stats,
+        charts=bundle.charts,
+    )
+
+
+@app.post("/api/advisor/report/email/send", response_model=AdvisorEmailSendResponse)
+def send_advisor_report_email(
+    payload: AdvisorEmailSendRequest,
+    _: Owner = Depends(get_current_owner),
+    db: Session = Depends(get_db),
+) -> AdvisorEmailSendResponse:
+    bundle = generate_advisor_bundle(
+        db,
+        days=payload.days,
+        end_date=payload.end_date,
+        include_pending=payload.include_pending,
+        include_transfers=payload.include_transfers,
+        hash_merchants=payload.hash_merchants,
+        round_amounts=payload.round_amounts,
+    )
+    email_parts = build_advisor_email(bundle=bundle, advisor_response=payload.advisor_response)
+    recipients = (
+        payload.recipients
+        if payload.recipients is not None
+        else _read_settings(db).email_report_recipients
+    )
+    result = send_advisor_email(
+        db,
+        recipients_csv=recipients,
+        subject=email_parts["subject"],
+        markdown_body=email_parts["markdown"],
+        html_body=email_parts["html"],
+    )
+    return AdvisorEmailSendResponse(
+        sent=result["sent"],
+        reason=result.get("reason"),
+        subject=email_parts["subject"],
+        recipients=recipients,
+        recipient_count=result.get("recipient_count", 0),
+        start=bundle.start.isoformat(),
+        end=bundle.end.isoformat(),
+    )
 
 
 def _serialize_category(category: Category) -> CategoryResponse:

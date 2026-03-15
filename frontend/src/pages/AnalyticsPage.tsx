@@ -6,9 +6,8 @@ import {
   Cell,
   Line,
   LineChart,
+  LabelList,
   Legend,
-  Pie,
-  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -20,6 +19,7 @@ import { ExpandableChart } from '../components/ExpandableChart';
 import { SankeyChart } from '../components/SankeyChart';
 import { SectionLayout } from '../components/SectionLayout';
 import type { Account, Category } from '../types';
+import { isLiabilityAccount } from '../utils/accounts';
 
 type SankeyData = {
   nodes: {
@@ -106,19 +106,34 @@ type MortgageActivity = {
   snapshot_count: number;
 };
 
-export function AnalyticsPage() {
-  const liabilityTypes = useMemo(
-    () =>
-      new Set([
-        'credit',
-        'credit_card',
-        'loan',
-        'mortgage',
-        'liability',
-        'debt'
-      ]),
-    []
+type SignedBarLabelProps = {
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  value?: number;
+};
+
+function SignedCurrencyLabel({ x = 0, y = 0, width = 0, height = 0, value = 0 }: SignedBarLabelProps) {
+  const label = `$${Math.abs(value).toFixed(0)}`;
+  const barEndX = Math.max(x, x + width);
+  const labelX = barEndX + 8;
+
+  return (
+    <text
+      x={labelX}
+      y={y + height / 2}
+      fill="var(--fg)"
+      fontSize={12}
+      textAnchor="start"
+      dominantBaseline="central"
+    >
+      {label}
+    </text>
   );
+}
+
+export function AnalyticsPage() {
   const tooltipStyle = useMemo(
     () => ({
       contentStyle: {
@@ -152,22 +167,31 @@ export function AnalyticsPage() {
   const [mortgageProjection, setMortgageProjection] =
     useState<MortgageProjection | null>(null);
   const [mortgageActivity, setMortgageActivity] = useState<MortgageActivity | null>(null);
-  const [sankeyMode, setSankeyMode] = useState('income_hub_outcomes');
+  const [sankeyMode, setSankeyMode] = useState('account_to_grouped_category');
   const [sankeyCategory, setSankeyCategory] = useState('');
 
   const [utilityInflation, setUtilityInflation] = useState(4);
   const [generalInflation, setGeneralInflation] = useState(3);
   const [savingsApr, setSavingsApr] = useState(4.5);
   const [mortgageAccountId, setMortgageAccountId] = useState('');
-  const [mortgagePrincipal, setMortgagePrincipal] = useState(250000);
-  const [mortgageRate, setMortgageRate] = useState(6.5);
-  const [mortgageYears, setMortgageYears] = useState(30);
+  const [mortgagePrincipal, setMortgagePrincipal] = useState(0);
+  const [mortgageRate, setMortgageRate] = useState(0);
+  const [mortgageYears, setMortgageYears] = useState(0);
   const [mortgagePayment, setMortgagePayment] = useState(0);
   const [mortgageExtra, setMortgageExtra] = useState(0);
   const [mortgageMonths, setMortgageMonths] = useState(360);
   const [mortgageOriginalPrincipal, setMortgageOriginalPrincipal] = useState(0);
   const [autoSyncMortgageFromAccount, setAutoSyncMortgageFromAccount] =
     useState(true);
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 900px)');
+    const apply = () => setIsMobile(media.matches);
+    apply();
+    media.addEventListener('change', apply);
+    return () => media.removeEventListener('change', apply);
+  }, []);
 
   async function load() {
     const params = new URLSearchParams({
@@ -203,7 +227,18 @@ export function AnalyticsPage() {
     );
     setBalanceTrends(trends);
 
-    if (mortgagePrincipal > 0) {
+    if (mortgageAccountId) {
+      const activity = await apiFetch<MortgageActivity>(
+        `/api/analytics/mortgage_activity?account_id=${encodeURIComponent(
+          mortgageAccountId
+        )}&start=${start}&end=${end}`
+      );
+      setMortgageActivity(activity);
+    } else {
+      setMortgageActivity(null);
+    }
+
+    if (mortgagePrincipal > 0 && mortgageRate > 0 && mortgageYears > 0) {
       const mortgageParams = new URLSearchParams({
         principal_balance: String(mortgagePrincipal),
         annual_interest_rate: String(mortgageRate),
@@ -218,20 +253,8 @@ export function AnalyticsPage() {
         `/api/analytics/mortgage_projection?${mortgageParams.toString()}`
       );
       setMortgageProjection(mortgage);
-
-      if (mortgageAccountId) {
-        const activity = await apiFetch<MortgageActivity>(
-          `/api/analytics/mortgage_activity?account_id=${encodeURIComponent(
-            mortgageAccountId
-          )}&start=${start}&end=${end}`
-        );
-        setMortgageActivity(activity);
-      } else {
-        setMortgageActivity(null);
-      }
     } else {
       setMortgageProjection(null);
-      setMortgageActivity(null);
     }
   }
 
@@ -246,7 +269,7 @@ export function AnalyticsPage() {
 
   useEffect(() => {
     const liabilities = accounts.filter((account) =>
-      liabilityTypes.has(account.type.toLowerCase())
+      isLiabilityAccount(account)
     );
     if (!liabilities.length) return;
 
@@ -273,7 +296,7 @@ export function AnalyticsPage() {
       setMortgagePrincipal(current);
       setMortgageOriginalPrincipal((prev) => (prev > 0 ? prev : current));
     }
-  }, [accounts, mortgageAccountId, autoSyncMortgageFromAccount, liabilityTypes]);
+  }, [accounts, mortgageAccountId, autoSyncMortgageFromAccount]);
 
   useEffect(() => {
     load().catch(() => {
@@ -315,7 +338,7 @@ export function AnalyticsPage() {
     return accounts
       .map((account) => {
         const rawBalance = Number(account.balance ?? 0);
-        const isLiability = liabilityTypes.has(account.type.toLowerCase());
+        const isLiability = isLiabilityAccount(account);
         const signedBalance = isLiability ? -Math.abs(rawBalance) : rawBalance;
         return {
           account: account.name,
@@ -328,7 +351,7 @@ export function AnalyticsPage() {
         };
       })
       .sort((a, b) => Math.abs(b.signed_balance) - Math.abs(a.signed_balance));
-  }, [accounts, liabilityTypes]);
+  }, [accounts]);
 
   const assetLiabilityTotals = useMemo(() => {
     let assets = 0;
@@ -414,11 +437,38 @@ export function AnalyticsPage() {
   }, [paidPrincipal, mortgageOriginalPrincipal]);
 
   const monthlyPaymentRows = useMemo(() => mortgageActivity?.monthly ?? [], [mortgageActivity]);
+  const observedMonthlyPayment = useMemo(() => {
+    const paymentRows = monthlyPaymentRows.filter((row) => row.payment_amount > 0);
+    if (!paymentRows.length) return 0;
+    return (
+      paymentRows.reduce((sum, row) => sum + row.payment_amount, 0) / paymentRows.length
+    );
+  }, [monthlyPaymentRows]);
+
+  const mortgageRequiredFields = useMemo(() => {
+    const missing: string[] = [];
+    if (!mortgageAccountId) missing.push('mortgage account');
+    if (mortgagePrincipal <= 0) missing.push('current balance');
+    if (mortgageRate <= 0) missing.push('interest rate');
+    if (mortgageYears <= 0) missing.push('years remaining');
+    return missing;
+  }, [mortgageAccountId, mortgagePrincipal, mortgageRate, mortgageYears]);
+
+  const mortgageRecommendedFields = useMemo(() => {
+    const missing: string[] = [];
+    if (mortgageOriginalPrincipal <= 0) missing.push('original principal');
+    if (mortgagePayment <= 0 && observedMonthlyPayment <= 0) {
+      missing.push('monthly payment');
+    }
+    return missing;
+  }, [mortgageOriginalPrincipal, mortgagePayment, observedMonthlyPayment]);
+  const mobileChartWidth = 560;
 
   return (
     <SectionLayout
-      pageKey="analytics"
+      pageKey="analytics_v2"
       title="Analytics Studio"
+      expandAllByDefault={false}
       sections={[
         {
           id: 'analytics-controls',
@@ -463,8 +513,8 @@ export function AnalyticsPage() {
                   value={sankeyMode}
                   onChange={(e) => setSankeyMode(e.target.value)}
                 >
-                  <option value="income_hub_outcomes">
-                    Income → Cash hubs → Outcomes (Recommended)
+                  <option value="account_to_grouped_category">
+                    Accounts → Groups → Categories (Recommended)
                   </option>
                   <option value="account_to_category">
                     Accounts → Categories
@@ -478,7 +528,6 @@ export function AnalyticsPage() {
                 Category focus
                 <select
                   value={sankeyCategory}
-                  disabled={sankeyMode === 'income_hub_outcomes'}
                   onChange={(e) => setSankeyCategory(e.target.value)}
                 >
                   <option value="">All categories</option>
@@ -493,62 +542,50 @@ export function AnalyticsPage() {
           )
         },
         {
-          id: 'analytics-sankey',
-          label: 'Sankey Flow',
-          content: (
-            <ExpandableChart
-              label="Sankey Flow"
-              height={420}
-              expandedHeight={920}
-            >
-              {(height, expanded) => (
-                <SankeyChart
-                  nodes={sankeyRaw.nodes}
-                  links={sankeyRaw.links}
-                  height={height}
-                  width={expanded ? 1800 : 1200}
-                />
-              )}
-            </ExpandableChart>
-          )
-        },
-        {
           id: 'analytics-share',
           label: 'Category Share',
           content: (
-            <ResponsiveContainer width="100%" height={280}>
-              <PieChart>
-                <Pie
-                  data={pie}
-                  dataKey="amount"
-                  nameKey="category"
-                  outerRadius={100}
-                  fill="var(--series-1)"
-                >
-                  {pie.map((entry) => (
+            <div className={isMobile ? 'chart-scroll' : ''}>
+            <ResponsiveContainer width={isMobile ? mobileChartWidth : '100%'} height={Math.max(280, pie.length * 42)}>
+              <BarChart
+                data={[...pie].sort((a, b) => b.amount - a.amount).slice(0, 10)}
+                layout="vertical"
+                margin={{ top: 8, right: isMobile ? 72 : 22, bottom: 8, left: 12 }}
+              >
+                <CartesianGrid stroke="var(--text-subtle)" strokeDasharray="3 3" horizontal={false} />
+                <XAxis type="number" stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
+                <YAxis
+                  type="category"
+                  dataKey="category"
+                  width={isMobile ? 190 : 140}
+                  stroke="var(--fg)"
+                  tick={{ fill: 'var(--fg)', fontSize: 12 }}
+                />
+                <Tooltip {...tooltipStyle} cursor={false} />
+                <Bar dataKey="amount" name="Spend">
+                  <LabelList dataKey="amount" content={<SignedCurrencyLabel />} />
+                  {[...pie].sort((a, b) => b.amount - a.amount).slice(0, 10).map((entry) => (
                     <Cell
                       key={entry.category}
-                      fill={
-                        categoryStyle.get(entry.category)?.color ||
-                        'var(--series-1)'
-                      }
+                      fill={categoryStyle.get(entry.category)?.color || 'var(--series-1)'}
                     />
                   ))}
-                </Pie>
-                <Tooltip {...tooltipStyle} />
-              </PieChart>
+                </Bar>
+              </BarChart>
             </ResponsiveContainer>
+            </div>
           )
         },
         {
           id: 'analytics-account-balances',
           label: 'Account Balances Snapshot',
           content: (
-            <ResponsiveContainer width="100%" height={340}>
+            <div className={isMobile ? 'chart-scroll' : ''}>
+            <ResponsiveContainer width={isMobile ? 620 : '100%'} height={340}>
               <BarChart
                 data={accountBalanceRows}
                 layout="vertical"
-                margin={{ top: 8, right: 18, bottom: 8, left: 18 }}
+                margin={{ top: 8, right: isMobile ? 72 : 18, bottom: 8, left: 18 }}
               >
                 <CartesianGrid
                   stroke="var(--text-subtle)"
@@ -558,13 +595,14 @@ export function AnalyticsPage() {
                 <YAxis
                   type="category"
                   dataKey="account"
-                  width={320}
+                  width={isMobile ? 250 : 320}
                   stroke="var(--fg)"
                   tick={{ fill: 'var(--fg)' }}
                 />
                 <Tooltip {...tooltipStyle} />
-                <Legend formatter={legendFormatter} />
+                {!isMobile && <Legend formatter={legendFormatter} />}
                 <Bar dataKey="signed_balance" name="Net balance">
+                  <LabelList dataKey="signed_balance" content={<SignedCurrencyLabel />} />
                   {accountBalanceRows.map((row) => (
                     <Cell
                       key={`${row.account}-${row.type}`}
@@ -576,6 +614,7 @@ export function AnalyticsPage() {
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
+            </div>
           )
         },
         {
@@ -583,25 +622,45 @@ export function AnalyticsPage() {
           label: 'Assets vs Liabilities',
           content: (
             <div className="grid two">
-              <ResponsiveContainer width="100%" height={280}>
-                <PieChart>
-                  <Pie
-                    data={assetLiabilityTotals}
-                    dataKey="amount"
-                    nameKey="name"
-                    outerRadius={95}
-                  >
-                    <Cell fill="var(--series-5)" />
-                    <Cell fill="var(--danger)" />
-                  </Pie>
+              <div className={isMobile ? 'chart-scroll' : ''}>
+              <ResponsiveContainer width={isMobile ? mobileChartWidth : '100%'} height={280}>
+                <BarChart
+                  data={assetLiabilityTotals}
+                  layout="vertical"
+                  margin={{ top: 8, right: isMobile ? 72 : 18, bottom: 8, left: 18 }}
+                >
+                  <CartesianGrid
+                    stroke="var(--text-subtle)"
+                    strokeDasharray="3 3"
+                    horizontal={false}
+                  />
+                  <XAxis type="number" stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
+                  <YAxis
+                    type="category"
+                    dataKey="name"
+                    width={isMobile ? 120 : 110}
+                    stroke="var(--fg)"
+                    tick={{ fill: 'var(--fg)' }}
+                  />
                   <Tooltip {...tooltipStyle} cursor={false} />
-                </PieChart>
+                  <Bar dataKey="amount" name="Balance">
+                    {assetLiabilityTotals.map((row) => (
+                      <Cell
+                        key={row.name}
+                        fill={row.name === 'Liabilities' ? 'var(--danger)' : 'var(--series-5)'}
+                      />
+                    ))}
+                    <LabelList dataKey="amount" content={<SignedCurrencyLabel />} />
+                  </Bar>
+                </BarChart>
               </ResponsiveContainer>
-              <ResponsiveContainer width="100%" height={280}>
+              </div>
+              <div className={isMobile ? 'chart-scroll' : ''}>
+              <ResponsiveContainer width={isMobile ? 620 : '100%'} height={280}>
                 <BarChart
                   data={debtRows}
                   layout="vertical"
-                  margin={{ top: 8, right: 18, bottom: 8, left: 18 }}
+                  margin={{ top: 8, right: isMobile ? 72 : 18, bottom: 8, left: 18 }}
                 >
                   <CartesianGrid
                     stroke="var(--text-subtle)"
@@ -611,20 +670,46 @@ export function AnalyticsPage() {
                   <YAxis
                     type="category"
                     dataKey="account"
-                    width={320}
+                    width={isMobile ? 250 : 320}
                     stroke="var(--fg)"
                     tick={{ fill: 'var(--fg)' }}
                   />
                   <Tooltip {...tooltipStyle} cursor={false} />
-                  <Bar dataKey="debt" name="Debt balance" fill="var(--danger)" />
+                  <Bar dataKey="debt" name="Debt balance" fill="var(--danger)">
+                    <LabelList dataKey="debt" content={<SignedCurrencyLabel />} />
+                  </Bar>
                 </BarChart>
               </ResponsiveContainer>
+              </div>
             </div>
+          )
+        },
+        {
+          id: 'analytics-sankey',
+          label: 'Sankey Flow',
+          defaultCollapsed: true,
+          content: (
+            <ExpandableChart
+              label="Sankey Flow"
+              height={520}
+              expandedHeight={1080}
+            >
+              {(height, expanded) => (
+                <SankeyChart
+                  nodes={sankeyRaw.nodes}
+                  links={sankeyRaw.links}
+                  height={height}
+                  width={1200}
+                  expanded={expanded}
+                />
+              )}
+            </ExpandableChart>
           )
         },
         {
           id: 'analytics-balance-trends',
           label: 'Net Worth & Balance Trends',
+          defaultCollapsed: true,
           content: (
             <div className="grid two">
               <ResponsiveContainer width="100%" height={300}>
@@ -636,7 +721,7 @@ export function AnalyticsPage() {
                   <XAxis dataKey="date" stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
                   <YAxis stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
                   <Tooltip {...tooltipStyle} />
-                  <Legend formatter={legendFormatter} />
+                  {!isMobile && <Legend formatter={legendFormatter} />}
                   <Line
                     dataKey="assets"
                     name="Assets"
@@ -666,7 +751,7 @@ export function AnalyticsPage() {
                   <XAxis dataKey="date" stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
                   <YAxis stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
                   <Tooltip {...tooltipStyle} />
-                  <Legend formatter={legendFormatter} />
+                  {!isMobile && <Legend formatter={legendFormatter} />}
                   {topTrendAccounts.map((account, idx) => (
                     <Line
                       key={account.account_id}
@@ -701,11 +786,7 @@ export function AnalyticsPage() {
                   >
                     <option value="">Select account</option>
                     {accounts
-                      .filter((account) =>
-                        ['credit', 'credit_card', 'loan', 'mortgage', 'liability', 'debt'].includes(
-                          account.type.toLowerCase()
-                        )
-                      )
+                      .filter((account) => isLiabilityAccount(account))
                       .map((account) => (
                         <option key={account.id} value={account.id}>
                           {account.name} ({account.type})
@@ -744,6 +825,7 @@ export function AnalyticsPage() {
                   <input
                     type="number"
                     step="0.01"
+                    placeholder="Required"
                     value={mortgageRate}
                     onChange={(e) => setMortgageRate(Number(e.target.value))}
                   />
@@ -752,6 +834,7 @@ export function AnalyticsPage() {
                   Years remaining
                   <input
                     type="number"
+                    placeholder="Required"
                     value={mortgageYears}
                     onChange={(e) => setMortgageYears(Number(e.target.value))}
                   />
@@ -781,6 +864,42 @@ export function AnalyticsPage() {
                   />
                 </label>
               </div>
+              <div className="grid two">
+                <article className="card">
+                  <h3>Prediction Inputs</h3>
+                  <p className="category-editor-note">
+                    Current balance is pulled from the selected account when sync is on.
+                  </p>
+                  <p className="category-editor-note">
+                    Required: {mortgageRequiredFields.length ? mortgageRequiredFields.join(', ') : 'ready to run'}
+                  </p>
+                  <p className="category-editor-note">
+                    Recommended: {mortgageRecommendedFields.length ? mortgageRecommendedFields.join(', ') : 'none'}
+                  </p>
+                  {observedMonthlyPayment > 0 && mortgagePayment <= 0 && (
+                    <p className="category-editor-note">
+                      Observed average payment in selected range: <strong>${observedMonthlyPayment.toFixed(2)}</strong>
+                    </p>
+                  )}
+                </article>
+                <article className="card">
+                  <h3>Selected Mortgage Account</h3>
+                  {mortgageAccountId ? (
+                    <>
+                      <p className="category-editor-note">
+                        Current balance: <strong>${mortgagePrincipal.toFixed(2)}</strong>
+                      </p>
+                      <p className="category-editor-note">
+                        Turn off sync only if you need to override the live account balance.
+                      </p>
+                    </>
+                  ) : (
+                    <p className="category-editor-note">
+                      Select the mortgage account first to auto-fill the current balance and load observed payment history.
+                    </p>
+                  )}
+                </article>
+              </div>
               {mortgageProjection && (
                 <>
                   <p className="category-editor-note">
@@ -809,7 +928,7 @@ export function AnalyticsPage() {
                         <XAxis dataKey="month" stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
                         <YAxis stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
                         <Tooltip {...tooltipStyle} />
-                        <Legend formatter={legendFormatter} />
+                        {!isMobile && <Legend formatter={legendFormatter} />}
                         <Line
                           dataKey="baseline_balance"
                           name="Balance (base)"
@@ -833,7 +952,7 @@ export function AnalyticsPage() {
                         <XAxis dataKey="month" stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
                         <YAxis stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
                         <Tooltip {...tooltipStyle} />
-                        <Legend formatter={legendFormatter} />
+                        {!isMobile && <Legend formatter={legendFormatter} />}
                         <Line
                           dataKey="baseline_interest"
                           name="Cumulative interest (base)"
@@ -862,7 +981,7 @@ export function AnalyticsPage() {
                         <XAxis dataKey="month" stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
                         <YAxis stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
                         <Tooltip {...tooltipStyle} />
-                        <Legend formatter={legendFormatter} />
+                        {!isMobile && <Legend formatter={legendFormatter} />}
                         <Bar
                           dataKey="payment_amount"
                           name="Payments seen"
@@ -884,7 +1003,7 @@ export function AnalyticsPage() {
                         <XAxis dataKey="date" stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
                         <YAxis stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
                         <Tooltip {...tooltipStyle} />
-                        <Legend formatter={legendFormatter} />
+                        {!isMobile && <Legend formatter={legendFormatter} />}
                         <Line
                           dataKey="balance"
                           name="Observed mortgage balance"
@@ -902,6 +1021,11 @@ export function AnalyticsPage() {
                       </p>
                     )}
                 </>
+              )}
+              {!mortgageProjection && mortgageRequiredFields.length > 0 && (
+                <p className="category-editor-note">
+                  Mortgage projection will appear after the required fields are filled in.
+                </p>
               )}
             </>
           )

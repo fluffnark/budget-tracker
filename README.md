@@ -45,6 +45,38 @@ Notes:
 - If `8000` is already in use, backend is auto-mapped to `58010` (or another fallback).
 - Frontend is exposed on `0.0.0.0:5173` for `harmony.local`.
 
+## Nginx Prefix Routing (`/budget`)
+To host without colliding with other local services, publish this app only under `harmony.local/budget`.
+
+1. Set frontend path env in `.env`:
+   - `VITE_BASE_PATH=/budget/`
+   - `VITE_ROUTER_BASENAME=/budget`
+   - `VITE_API_BASE=/budget`
+2. Restart frontend/backend (`./start_app.sh` or local dev commands).
+3. Add Nginx locations (more specific API rule first):
+
+```nginx
+location = /budget {
+  return 301 /budget/;
+}
+
+location /budget/api/ {
+  proxy_pass http://127.0.0.1:8000/api/;
+  proxy_set_header Host $host;
+  proxy_set_header X-Real-IP $remote_addr;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+location /budget/ {
+  proxy_pass http://127.0.0.1:5173/;
+  proxy_http_version 1.1;
+  proxy_set_header Host $host;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection "upgrade";
+}
+```
+
 ## Verification Commands
 - `make lint`
 - `make test`

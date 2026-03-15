@@ -215,7 +215,7 @@ export function CategorizePage() {
       end: filters.end,
       include_pending: filters.include_pending ? '1' : '0',
       include_transfers: filters.include_transfers ? '1' : '0',
-      mode: 'account_to_category'
+      mode: 'account_to_grouped_category'
     });
     if (filters.category_id)
       params.set('category_id', String(filters.category_id));
@@ -459,6 +459,10 @@ export function CategorizePage() {
     const chosen =
       overrideSuggestions ??
       suggestions.filter((item) => selectedIds.has(item.transaction_id));
+    if (!chosen.length) {
+      setError('No suggestions selected to apply.');
+      return;
+    }
     setApplyingSuggestions(true);
     setApplyTargetCount(chosen.length);
     setError('');
@@ -479,10 +483,25 @@ export function CategorizePage() {
           })
         }
       );
+      const skippedSummary = Object.entries(response.skipped_reasons ?? {})
+        .filter(([, count]) => count > 0)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4)
+        .map(([reason, count]) => `${reason}: ${count}`)
+        .join(', ');
+
       setMessage(
-        `Applied ${response.applied_count} categories, skipped ${response.skipped_count}.`
+        response.applied_count > 0
+          ? `Applied ${response.applied_count} categories, skipped ${response.skipped_count}${
+              skippedSummary ? ` (${skippedSummary})` : ''
+            }.`
+          : `Applied 0 categories. Skipped ${response.skipped_count}${
+              skippedSummary ? ` (${skippedSummary})` : ''
+            }.`
       );
-      setShowReview(false);
+      if (response.applied_count > 0) {
+        setShowReview(false);
+      }
       await Promise.all([loadTransactions(), loadSankey()]);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Apply failed');
@@ -514,17 +533,75 @@ export function CategorizePage() {
       // fall through
     }
 
-    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-    if (fenced?.[1]) {
-      return JSON.parse(fenced[1]);
+    const fencedBlocks = [...trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi)];
+    for (const block of fencedBlocks) {
+      const candidate = block[1]?.trim();
+      if (!candidate) continue;
+      try {
+        return JSON.parse(candidate);
+      } catch {
+        // try next block
+      }
+    }
+
+    // Try to find a balanced JSON object containing the expected key.
+    const keyIndex = trimmed.indexOf('"proposed_assignments"');
+    if (keyIndex >= 0) {
+      let start = -1;
+      for (let i = keyIndex; i >= 0; i -= 1) {
+        if (trimmed[i] === '{') {
+          start = i;
+          break;
+        }
+      }
+      if (start >= 0) {
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        for (let i = start; i < trimmed.length; i += 1) {
+          const ch = trimmed[i];
+          if (inString) {
+            if (escaped) {
+              escaped = false;
+            } else if (ch === '\\') {
+              escaped = true;
+            } else if (ch === '"') {
+              inString = false;
+            }
+            continue;
+          }
+          if (ch === '"') {
+            inString = true;
+            continue;
+          }
+          if (ch === '{') depth += 1;
+          if (ch === '}') {
+            depth -= 1;
+            if (depth === 0) {
+              const candidate = trimmed.slice(start, i + 1);
+              try {
+                return JSON.parse(candidate);
+              } catch {
+                break;
+              }
+            }
+          }
+        }
+      }
     }
 
     const first = trimmed.indexOf('{');
     const last = trimmed.lastIndexOf('}');
     if (first >= 0 && last > first) {
-      return JSON.parse(trimmed.slice(first, last + 1));
+      try {
+        return JSON.parse(trimmed.slice(first, last + 1));
+      } catch {
+        // fall through
+      }
     }
-    throw new Error('Could not parse JSON from LLM response.');
+    throw new Error(
+      'Could not parse categorization JSON. Paste an LLM response that includes a JSON object with proposed_assignments.'
+    );
   }
 
   function buildLLMPreflight(parsed: {
@@ -722,6 +799,12 @@ ${JSON.stringify(uncategorizedOnly, null, 2)}
       const preflight = buildLLMPreflight(parsed);
       setLlmPreflight(preflight);
 
+      if (preflight.assignmentCount === 0) {
+        throw new Error(
+          'No proposed assignments found. Expected JSON shape: {"proposed_assignments":[{"transaction_id":"...","category_id":123}]}'
+        );
+      }
+
       if (preflight.invalidCategoryIds.length > 0) {
         throw new Error(
           `Invalid category IDs: ${preflight.invalidCategoryIds.join(', ')}`
@@ -768,9 +851,17 @@ ${JSON.stringify(uncategorizedOnly, null, 2)}
           })
         }
       );
+      const skippedSummary = Object.entries(response.skipped_reasons ?? {})
+        .filter(([, count]) => count > 0)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4)
+        .map(([reason, count]) => `${reason}: ${count}`)
+        .join(', ');
 
       setMessage(
-        `Imported LLM output: applied ${response.applied_count}, skipped ${response.skipped_count}, rules created ${response.rules_created}.`
+        `Imported LLM output: applied ${response.applied_count}, skipped ${response.skipped_count}, rules created ${response.rules_created}${
+          skippedSummary ? ` (${skippedSummary})` : ''
+        }.`
       );
       setShowReview(false);
       await Promise.all([loadTransactions(), loadSankey()]);
@@ -953,7 +1044,7 @@ ${JSON.stringify(uncategorizedOnly, null, 2)}
           {
             id: 'studio-sankey',
             label: 'Sankey',
-            content: <SankeyChart nodes={sankey.nodes} links={sankey.links} />
+            content: <SankeyChart nodes={sankey.nodes} links={sankey.links} height={500} />
           }
         ]}
       />

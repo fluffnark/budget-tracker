@@ -22,7 +22,7 @@ dev-local-backend:
 	cd backend && DATABASE_URL=$${DATABASE_URL:-postgresql+psycopg://budget:budget@127.0.0.1:$${DB_PORT:-5432}/budget} PYTHONPATH=. ./start.sh
 
 dev-local-frontend:
-	cd frontend && VITE_PROXY_TARGET=$${VITE_PROXY_TARGET:-http://127.0.0.1:$${BACKEND_PORT:-8000}} npm run dev -- --host 0.0.0.0 --port $${FRONTEND_PORT:-5173}
+	cd frontend && VITE_PROXY_TARGET=$${VITE_PROXY_TARGET:-http://127.0.0.1:$${BACKEND_PORT:-8000}} VITE_API_BASE=$${VITE_API_BASE:-} VITE_BASE_PATH=$${VITE_BASE_PATH:-/} VITE_ROUTER_BASENAME=$${VITE_ROUTER_BASENAME:-} npm run dev -- --host 0.0.0.0 --port $${FRONTEND_PORT:-5173}
 
 build:
 	docker compose build backend frontend

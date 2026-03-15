@@ -1,8 +1,9 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     Boolean,
+    Date,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -60,6 +61,7 @@ class Account(Base):
     institution_id: Mapped[int | None] = mapped_column(ForeignKey("institutions.id"), nullable=True)
     source_type: Mapped[str] = mapped_column(String(20), nullable=False)
     provider_account_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider_meta: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     type: Mapped[str] = mapped_column(String(50), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="USD", nullable=False)
@@ -109,6 +111,42 @@ class Category(Base):
     icon: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     parent: Mapped["Category | None"] = relationship(remote_side=[id])
+
+
+class BudgetMonth(Base):
+    __tablename__ = "budget_months"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    month_start: Mapped[date] = mapped_column(Date, nullable=False, unique=True)
+    income_target: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    starting_cash: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    planned_savings: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    leftover_strategy: Mapped[str] = mapped_column(String(30), nullable=False, default="unassigned")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class BudgetCategoryPlan(Base):
+    __tablename__ = "budget_category_plans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    budget_month_id: Mapped[int] = mapped_column(ForeignKey("budget_months.id"), nullable=False)
+    category_id: Mapped[int] = mapped_column(ForeignKey("categories.id"), nullable=False)
+    planned_amount: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    is_fixed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_essential: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    rollover_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="none")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("budget_month_id", "category_id", name="uq_budget_category_month"),
+        Index("idx_budget_category_month", "budget_month_id", "category_id"),
+    )
 
 
 class Transfer(Base):

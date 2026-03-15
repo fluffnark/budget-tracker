@@ -51,15 +51,6 @@ export type RulePreviewResponse = {
   sample_transaction_ids: string[];
 };
 
-export type Transfer = {
-  id: number;
-  txn_out_id: string;
-  txn_in_id: string;
-  confidence: number;
-  status: string;
-  created_at: string;
-};
-
 export type Category = {
   id: number;
   parent_id: number | null;
@@ -87,6 +78,14 @@ export type Settings = {
   smtp_use_tls: boolean;
   smtp_use_ssl: boolean;
   smtp_password_set: boolean;
+};
+
+export type AuthStatus = {
+  is_setup: boolean;
+  is_authenticated: boolean;
+  owner_email: string | null;
+  simplefin_connected: boolean;
+  simplefin_status: string | null;
 };
 
 export type SyncStatus = {
@@ -121,6 +120,91 @@ export type CategorizationApplyResponse = {
   skipped_reasons: Record<string, number>;
 };
 
+export type BudgetCategoryPlanRow = {
+  category_id: number;
+  category_name: string;
+  category_path: string;
+  parent_category_name: string | null;
+  planned_amount: number;
+  actual_amount: number;
+  remaining_amount: number;
+  last_month_actual: number;
+  avg_3_month_actual: number;
+  is_fixed: boolean;
+  is_essential: boolean;
+  rollover_mode: 'none' | 'surplus_only' | 'next_month_cover';
+};
+
+export type BudgetFamilySummary = {
+  family: string;
+  planned_amount: number;
+  actual_amount: number;
+  remaining_amount: number;
+  essential_planned: number;
+  discretionary_planned: number;
+};
+
+export type BudgetMonthSnapshot = {
+  month_start: string;
+  income_target: number;
+  starting_cash: number;
+  planned_savings: number;
+  suggested_income_target: number;
+  suggested_planned_savings: number;
+  leftover_strategy: 'unassigned' | 'send_to_savings' | 'send_to_debt';
+  income_available: number;
+  planned_spending: number;
+  actual_spending: number;
+  remaining_to_budget: number;
+  essential_planned: number;
+  discretionary_planned: number;
+  rows: BudgetCategoryPlanRow[];
+  family_summaries: BudgetFamilySummary[];
+};
+
+export type BudgetPeriodFamily = {
+  family: string;
+  amount: number;
+  subcategories: { category: string; path: string; amount: number }[];
+};
+
+export type BudgetPeriodSnapshot = {
+  period: 'weekly' | 'monthly' | 'yearly';
+  start: string;
+  end: string;
+  total_spend: number;
+  families: BudgetPeriodFamily[];
+  trend: {
+    label: string;
+    start: string;
+    end: string;
+    total: number;
+    families: Record<string, number>;
+  }[];
+};
+
+export type RecurringPaymentCandidate = {
+  label: string;
+  category_name: string;
+  family_name: string;
+  cadence: string;
+  occurrences: number;
+  average_amount: number;
+  estimated_monthly_cost: number;
+  last_amount: number;
+  last_posted_at: string;
+  next_expected_at: string;
+  is_cancel_candidate: boolean;
+};
+
+export type BudgetRecurringSnapshot = {
+  as_of: string;
+  estimated_monthly_total: number;
+  estimated_monthly_cancelable: number;
+  cancel_candidates: RecurringPaymentCandidate[];
+  essential_candidates: RecurringPaymentCandidate[];
+};
+
 export type LLMCategorizationImportResponse = {
   applied_count: number;
   skipped_count: number;
@@ -138,4 +222,36 @@ export type EmailReportSendResponse = {
   recipient_count: number;
   uncategorized_count: number;
   transaction_count: number;
+};
+
+export type AdvisorReportGenerateResponse = {
+  start: string;
+  end: string;
+  days: number;
+  stats: Record<string, any>;
+  charts: Record<string, any>;
+  scrubbed_payload: Record<string, any>;
+  prompt_markdown: string;
+};
+
+export type AdvisorEmailPreviewResponse = {
+  subject: string;
+  recipients: string;
+  markdown_body: string;
+  html_body: string;
+  start: string;
+  end: string;
+  days: number;
+  stats: Record<string, any>;
+  charts: Record<string, any>;
+};
+
+export type AdvisorEmailSendResponse = {
+  sent: boolean;
+  reason?: string | null;
+  subject?: string | null;
+  recipients: string;
+  recipient_count: number;
+  start?: string | null;
+  end?: string | null;
 };

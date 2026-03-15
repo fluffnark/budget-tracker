@@ -104,7 +104,3 @@ def _score_pair(
         score -= 0.20
 
     return max(0.0, min(1.0, score))
-
-
-def list_transfers(db: Session) -> list[Transfer]:
-    return db.execute(select(Transfer).order_by(Transfer.created_at.desc())).scalars().all()

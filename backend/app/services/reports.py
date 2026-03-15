@@ -4,7 +4,7 @@ from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from math import ceil
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Account, BalanceSnapshot, Category, Transaction
@@ -53,7 +53,12 @@ def _txns_for_range(
     if not include_pending:
         q = q.where(Transaction.is_pending.is_(False))
     if not include_transfers:
-        q = q.where(Transaction.transfer_id.is_(None))
+        q = q.where(
+            and_(
+                Transaction.transfer_id.is_(None),
+                or_(Category.system_kind.is_(None), Category.system_kind != "transfer"),
+            )
+        )
     return db.execute(q).all()
 
 
@@ -94,12 +99,14 @@ def weekly_report(
     category_spend = defaultdict(float)
     largest = []
     utilities = defaultdict(float)
+    daily_spend = defaultdict(float)
 
     for txn, category_name, account_name, _ in rows:
         amount = float(txn.amount)
         cat = category_name or "Uncategorized/Needs Review"
         if amount < 0:
             category_spend[cat] += abs(amount)
+            daily_spend[txn.posted_at.date().isoformat()] += abs(amount)
         largest.append(
             {
                 "id": txn.id,
@@ -115,12 +122,21 @@ def weekly_report(
 
     largest = sorted(largest, key=lambda item: abs(item["amount"]), reverse=True)[:10]
     top_categories = sorted(category_spend.items(), key=lambda item: item[1], reverse=True)[:8]
+    daily_points = []
+    cursor = start
+    while cursor <= end:
+        key = cursor.isoformat()
+        daily_points.append(
+            {"date": key, "label": cursor.strftime("%a"), "outflow": round(daily_spend.get(key, 0.0), 2)}
+        )
+        cursor += timedelta(days=1)
 
     return {
         "totals": _totals(rows),
         "top_categories": [{"category": k, "amount": round(v, 2)} for k, v in top_categories],
         "largest_transactions": largest,
         "utilities": [{"category": k, "amount": round(v, 2)} for k, v in sorted(utilities.items())],
+        "daily_outflow": daily_points,
     }
 
 
@@ -159,12 +175,14 @@ def monthly_report(
     current_cat = defaultdict(float)
     prev_cat = defaultdict(float)
     utilities = defaultdict(float)
+    daily_spend = defaultdict(float)
 
     for txn, category_name, _, _ in current_rows:
         cat = category_name or "Uncategorized/Needs Review"
         amount = float(txn.amount)
         if amount < 0:
             current_cat[cat] += abs(amount)
+            daily_spend[txn.posted_at.date().isoformat()] += abs(amount)
         if cat.startswith("Utilities"):
             utilities[cat] += abs(amount)
 
@@ -186,11 +204,25 @@ def monthly_report(
             }
         )
 
+    daily_points = []
+    cursor = start
+    while cursor < next_month_start:
+        key = cursor.isoformat()
+        daily_points.append(
+            {
+                "date": key,
+                "label": str(cursor.day),
+                "outflow": round(daily_spend.get(key, 0.0), 2),
+            }
+        )
+        cursor += timedelta(days=1)
+
     return {
         "totals": _totals(current_rows),
         "category_breakdown": [{"category": k, "amount": round(v, 2)} for k, v in breakdown],
         "mom_deltas": deltas,
         "utilities": [{"category": k, "amount": round(v, 2)} for k, v in sorted(utilities.items())],
+        "daily_outflow": daily_points,
     }
 
 
@@ -257,17 +289,32 @@ def sankey_data(
     if not include_pending:
         q = q.where(Transaction.is_pending.is_(False))
     if not include_transfers:
-        q = q.where(Transaction.transfer_id.is_(None))
+        q = q.where(
+            and_(
+                Transaction.transfer_id.is_(None),
+                or_(Category.system_kind.is_(None), Category.system_kind != "transfer"),
+            )
+        )
     if category_id is not None:
         q = q.where(Transaction.category_id == category_id)
     rows = db.execute(q).all()
     category_paths = _category_path_map(db)
-
-    if mode == "income_hub_outcomes":
+    if mode in {"income_hub_outcomes", "account_to_grouped_category"}:
         nodes: list[dict] = []
         node_idx: dict[str, int] = {}
+        account_to_group: dict[tuple[str, str], float] = defaultdict(float)
+        group_to_category: dict[tuple[str, str], float] = defaultdict(float)
+        group_meta: dict[str, dict[str, str | int | None]] = {}
+        category_meta: dict[tuple[str, str], dict[str, str | int | None]] = {}
 
-        def ensure_node(label: str, kind: str, color: str | None = None) -> int:
+        def ensure_node(
+            label: str,
+            kind: str,
+            *,
+            color: str | None = None,
+            icon: str | None = None,
+            category_ref: int | None = None,
+        ) -> int:
             key = f"{kind}:{label}"
             if key in node_idx:
                 return node_idx[key]
@@ -277,134 +324,112 @@ def sankey_data(
                     "name": label,
                     "kind": kind,
                     "color": color,
-                    "icon": None,
-                    "category_id": None,
+                    "icon": icon,
+                    "category_id": category_ref,
                 }
             )
             node_idx[key] = idx
             return idx
 
-        source_to_hub: dict[tuple[str, str], float] = defaultdict(float)
-        hub_to_outcome: dict[tuple[str, str], float] = defaultdict(float)
-        outcome_to_detail: dict[tuple[str, str], float] = defaultdict(float)
+        def category_flow_parts(category: Category | None) -> tuple[str, str, str | None, str | None, int | None]:
+            if category is None:
+                return (
+                    "Uncategorized",
+                    "Needs Review",
+                    "#6C757D",
+                    "❔",
+                    None,
+                )
 
-        def income_source_label(category_path: str, description_norm: str) -> str:
-            path_upper = (category_path or "").upper()
-            desc_upper = (description_norm or "").upper()
-            if "SALARY" in path_upper or "PAYROLL" in desc_upper:
-                return "Income: Salary"
-            if "INTEREST" in path_upper or "DIVIDEND" in desc_upper or "REFUND" in desc_upper:
-                return "Income: Other (dividends/interest/refunds)"
-            return "Income: Other (dividends/interest/refunds)"
+            category_path = category_paths.get(category.id, category.name)
+            path_parts = [part.strip() for part in category_path.split(" > ") if part.strip()]
+            group_name = path_parts[0] if path_parts else category.name
+            final_name = path_parts[-1] if path_parts else category.name
+            if final_name == group_name:
+                final_name = f"{final_name} (general)"
 
-        def classify_outcome_detail(category_path: str, description_norm: str) -> tuple[str, str]:
-            path = category_path or "Uncategorized/Needs Review"
-            path_upper = path.upper()
-            desc_upper = (description_norm or "").upper()
-            if "TRAVEL" in path_upper:
-                return "Travel", f"Travel → {path.split(' > ')[-1]}"
-            if "MORTGAGE" in path_upper or "MORTGAGE" in desc_upper:
-                return "Debt Service", "Debt Service → Mortgage"
-            if any(
-                token in desc_upper
-                for token in ["CITI", "CITIBANK", "CREDIT CARD", "CARD PAYMENT", "PAYMENT, THANK YOU"]
-            ):
-                return "Debt Service", "Debt Service → Credit Card Payoff"
-            if any(
-                token in desc_upper
-                for token in ["WEALTHFRONT", "VANGUARD", "ROTH", "IRA", "BROKERAGE", "INVEST"]
-            ):
-                if "WEALTHFRONT" in desc_upper:
-                    return "Savings & Investing", "Savings & Investing → Wealthfront"
-                if "ROTH" in desc_upper:
-                    return "Savings & Investing", "Savings & Investing → Vanguard Roth IRA"
-                return "Savings & Investing", "Savings & Investing → Vanguard Brokerage"
-            if path_upper.startswith("TRANSFERS"):
-                return "Internal Transfers", "Internal Transfers → Other internal moves"
-            return "Living Expenses", f"Living Expenses → {path}"
+            color = category.color or "#6C757D"
+            icon = category.icon or None
+            return group_name, final_name, color, icon, category.id
 
         for txn, category, account in rows:
-            amount = float(txn.amount)
+            amount = abs(float(txn.amount))
             if amount == 0:
                 continue
 
-            hub = account.name
-            category_path = (
-                category_paths.get(category.id, category.name)
-                if category is not None
-                else "Uncategorized/Needs Review"
+            group_name, final_name, color, icon, category_ref = category_flow_parts(category)
+            account_to_group[(account.name, group_name)] += amount
+            group_to_category[(group_name, final_name)] += amount
+
+            group_meta.setdefault(
+                group_name,
+                {
+                    "color": color,
+                    "icon": icon,
+                },
             )
-            abs_amount = abs(amount)
+            category_meta[(group_name, final_name)] = {
+                "color": color,
+                "icon": icon,
+                "category_id": category_ref,
+            }
 
-            if txn.transfer_id is not None:
-                if amount < 0:
-                    hub_to_outcome[(hub, "Internal Transfers")] += abs_amount
-                else:
-                    source_to_hub[("Internal Transfers", hub)] += abs_amount
-                continue
-
-            if amount > 0:
-                source = income_source_label(category_path, txn.description_norm)
-                if source.startswith("Income"):
-                    source_to_hub[(source, hub)] += abs_amount
-                else:
-                    source_to_hub[("Transfers In (external)", hub)] += abs_amount
-                continue
-
-            outcome, detail = classify_outcome_detail(category_path, txn.description_norm)
-            hub_to_outcome[(hub, outcome)] += abs_amount
-            outcome_to_detail[(outcome, detail)] += abs_amount
-
-        # Keep top detail nodes per outcome to prevent visual overload.
-        detail_limit = 8
-        kept_details: dict[str, set[str]] = defaultdict(set)
+        category_limit = 6
+        kept_categories: dict[str, set[str]] = defaultdict(set)
         overflow_totals: dict[str, float] = defaultdict(float)
-        for outcome in {outcome for outcome, _detail in outcome_to_detail.keys()}:
-            detail_rows = sorted(
-                [(detail, value) for (oc, detail), value in outcome_to_detail.items() if oc == outcome],
+        for group_name in {group for group, _category in group_to_category.keys()}:
+            entries = sorted(
+                [
+                    (category_name, value)
+                    for (group, category_name), value in group_to_category.items()
+                    if group == group_name
+                ],
                 key=lambda item: item[1],
                 reverse=True,
             )
-            for idx, (detail, value) in enumerate(detail_rows):
-                if idx < detail_limit:
-                    kept_details[outcome].add(detail)
+            for idx, (category_name, value) in enumerate(entries):
+                if idx < category_limit:
+                    kept_categories[group_name].add(category_name)
                 else:
-                    overflow_totals[outcome] += value
+                    overflow_totals[group_name] += value
 
         links_map: dict[tuple[int, int], float] = defaultdict(float)
 
-        for (source_label, hub_label), value in source_to_hub.items():
-            source_id = ensure_node(source_label, "source", "var(--series-2)")
-            hub_id = ensure_node(hub_label, "account", None)
-            links_map[(source_id, hub_id)] += value
+        for (account_name, group_name), value in sorted(
+            account_to_group.items(), key=lambda item: item[1], reverse=True
+        ):
+            account_id = ensure_node(account_name, "account")
+            group_id = ensure_node(
+                group_name,
+                "group",
+                color=group_meta[group_name]["color"],
+                icon=group_meta[group_name]["icon"],
+            )
+            links_map[(account_id, group_id)] += value
 
-        for (hub_label, outcome_label), value in hub_to_outcome.items():
-            hub_id = ensure_node(hub_label, "account", None)
-            outcome_color = {
-                "Living Expenses": "var(--series-1)",
-                "Travel": "var(--series-4)",
-                "Debt Service": "var(--danger)",
-                "Savings & Investing": "var(--series-5)",
-                "Internal Transfers": "var(--text-subtle)",
-            }.get(outcome_label, "var(--series-1)")
-            outcome_id = ensure_node(outcome_label, "outcome", outcome_color)
-            links_map[(hub_id, outcome_id)] += value
-
-        for (outcome_label, detail_label), value in outcome_to_detail.items():
-            if detail_label in kept_details[outcome_label]:
-                detail_name = detail_label
+        for (group_name, category_name), value in sorted(
+            group_to_category.items(), key=lambda item: item[1], reverse=True
+        ):
+            if category_name in kept_categories[group_name]:
+                display_name = category_name
+                meta = category_meta[(group_name, category_name)]
             else:
-                suffix = {
-                    "Living Expenses": "Other (Living)",
-                    "Travel": "Other (Travel)",
-                    "Debt Service": "Other (Debt)",
-                    "Savings & Investing": "Other (Savings)",
-                    "Internal Transfers": "Other internal moves",
-                }.get(outcome_label, "Other")
-                detail_name = f"{outcome_label} → {suffix}"
-            outcome_id = ensure_node(outcome_label, "outcome", None)
-            detail_id = ensure_node(detail_name, "detail", None)
-            links_map[(outcome_id, detail_id)] += value
+                display_name = f"Other {group_name}"
+                meta = group_meta[group_name]
+            group_id = ensure_node(
+                group_name,
+                "group",
+                color=group_meta[group_name]["color"],
+                icon=group_meta[group_name]["icon"],
+            )
+            category_id = ensure_node(
+                display_name,
+                "category",
+                color=meta["color"],
+                icon=meta["icon"],
+                category_ref=meta.get("category_id") if display_name == category_name else None,
+            )
+            links_map[(group_id, category_id)] += value
 
         links = [
             {"source": src, "target": dst, "value": round(value, 2)}

@@ -1,6 +1,9 @@
 .env
 .env.*
 !.env.example
+backups/
+*.dump
+*.sql
 secrets.json
 *.secrets.json
 __pycache__/

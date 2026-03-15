@@ -29,6 +29,8 @@ services:
     environment:
       VITE_PROXY_TARGET: ${VITE_PROXY_TARGET:-http://backend:8000}
       VITE_API_BASE: ${VITE_API_BASE:-}
+      VITE_BASE_PATH: ${VITE_BASE_PATH:-/}
+      VITE_ROUTER_BASENAME: ${VITE_ROUTER_BASENAME:-}
     ports:
       - "${FRONTEND_BIND_IP:-127.0.0.1}:${FRONTEND_PORT:-5173}:5173"
     depends_on:

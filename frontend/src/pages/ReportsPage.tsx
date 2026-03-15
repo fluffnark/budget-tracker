@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  Bar,
+  BarChart,
   Cell,
   CartesianGrid,
   Line,
   LineChart,
-  Pie,
-  PieChart,
+  LabelList,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -18,6 +19,7 @@ import { ExpandableChart } from '../components/ExpandableChart';
 type WeeklyData = {
   totals: { inflow: number; outflow: number; net: number };
   top_categories: { category: string; amount: number }[];
+  daily_outflow: { date: string; label: string; outflow: number }[];
   largest_transactions: {
     description: string;
     amount: number;
@@ -29,6 +31,7 @@ type WeeklyData = {
 type MonthlyData = {
   totals: { inflow: number; outflow: number; net: number };
   category_breakdown: { category: string; amount: number }[];
+  daily_outflow: { date: string; label: string; outflow: number }[];
   mom_deltas: {
     category: string;
     current: number;
@@ -85,7 +88,13 @@ export function ReportsPage() {
       .catch(() => setYearly(null));
   }, [includePending]);
 
-  const pieData = useMemo(() => monthly?.category_breakdown ?? [], [monthly]);
+  const categoryBarData = useMemo(
+    () =>
+      [...(monthly?.category_breakdown ?? [])]
+        .sort((a, b) => b.amount - a.amount)
+        .slice(0, 10),
+    [monthly]
+  );
   const pieColor = (category: string, index: number) => {
     const palette = [
       'var(--series-1)',
@@ -157,32 +166,120 @@ export function ReportsPage() {
               ))}
             </ul>
           </article>
+          <article className="card">
+            <h3>Daily Spend</h3>
+            <ExpandableChart label="Weekly Spend Over Time" height={260} expandedHeight={420}>
+              {(height) => (
+                <ResponsiveContainer width="100%" height={height}>
+                  <BarChart data={weekly.daily_outflow} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+                    <CartesianGrid stroke="var(--text-subtle)" strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="label" stroke="var(--fg)" tick={{ fill: 'var(--fg)', fontSize: 12 }} />
+                    <YAxis stroke="var(--fg)" tick={{ fill: 'var(--fg)', fontSize: 12 }} />
+                    <Tooltip
+                      contentStyle={{
+                        background: 'var(--card-bg)',
+                        border: '1px solid var(--border)',
+                        color: 'var(--fg)'
+                      }}
+                      labelStyle={{ color: 'var(--fg)' }}
+                      itemStyle={{ color: 'var(--fg)' }}
+                    />
+                    <Bar dataKey="outflow" fill="var(--series-2)" radius={[8, 8, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </ExpandableChart>
+          </article>
         </div>
       )}
 
       {tab === 'monthly' && monthly && (
         <div className="grid two">
           <article className="card">
-            <h3>Category Pie</h3>
-            <ExpandableChart label="Monthly Category Pie" height={280} expandedHeight={680}>
+            <h3>Category Breakdown</h3>
+            <ExpandableChart label="Monthly Category Breakdown" height={320} expandedHeight={720}>
               {(height) => (
                 <ResponsiveContainer width="100%" height={height}>
-                  <PieChart>
-                    <Pie
-                      data={pieData}
+                  <BarChart
+                    data={categoryBarData}
+                    layout="vertical"
+                    margin={{ top: 8, right: 72, bottom: 8, left: 24 }}
+                  >
+                    <CartesianGrid
+                      stroke="var(--text-subtle)"
+                      strokeDasharray="3 3"
+                      horizontal={false}
+                    />
+                    <XAxis type="number" stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
+                    <YAxis
+                      type="category"
+                      dataKey="category"
+                      width={140}
+                      stroke="var(--fg)"
+                      tick={{ fill: 'var(--fg)', fontSize: 12 }}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        background: 'var(--card-bg)',
+                        border: '1px solid var(--border)',
+                        color: 'var(--fg)'
+                      }}
+                      labelStyle={{ color: 'var(--fg)' }}
+                      itemStyle={{ color: 'var(--fg)' }}
+                    />
+                    <Bar
                       dataKey="amount"
-                      nameKey="category"
-                      outerRadius={Math.max(96, Math.round(height * 0.27))}
+                      radius={[8, 8, 8, 8]}
                     >
-                      {pieData.map((entry, idx) => (
+                      <LabelList
+                        dataKey="amount"
+                        position="right"
+                        formatter={(value: number) => `$${value.toFixed(0)}`}
+                      />
+                      {categoryBarData.map((entry, idx) => (
                         <Cell
                           key={`${entry.category}-${idx}`}
                           fill={pieColor(entry.category, idx)}
                         />
                       ))}
-                    </Pie>
-                    <Tooltip />
-                  </PieChart>
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </ExpandableChart>
+          </article>
+          <article className="card">
+            <h3>Daily Spend Trend</h3>
+            <ExpandableChart label="Monthly Spend Over Time" height={320} expandedHeight={520}>
+              {(height) => (
+                <ResponsiveContainer width="100%" height={height}>
+                  <LineChart data={monthly.daily_outflow} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+                    <CartesianGrid stroke="var(--text-subtle)" strokeDasharray="3 3" vertical={false} />
+                    <XAxis
+                      dataKey="label"
+                      stroke="var(--fg)"
+                      tick={{ fill: 'var(--fg)', fontSize: 12 }}
+                      interval={Math.max(0, Math.floor(monthly.daily_outflow.length / 8) - 1)}
+                    />
+                    <YAxis stroke="var(--fg)" tick={{ fill: 'var(--fg)', fontSize: 12 }} />
+                    <Tooltip
+                      contentStyle={{
+                        background: 'var(--card-bg)',
+                        border: '1px solid var(--border)',
+                        color: 'var(--fg)'
+                      }}
+                      labelStyle={{ color: 'var(--fg)' }}
+                      itemStyle={{ color: 'var(--fg)' }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="outflow"
+                      stroke="var(--series-3)"
+                      strokeWidth={3}
+                      dot={false}
+                      activeDot={{ r: 5 }}
+                    />
+                  </LineChart>
                 </ResponsiveContainer>
               )}
             </ExpandableChart>

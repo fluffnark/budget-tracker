@@ -13,6 +13,24 @@ class LoginResponse(BaseModel):
     email: str
 
 
+class AuthStatusResponse(BaseModel):
+    is_setup: bool
+    is_authenticated: bool
+    owner_email: str | None = None
+    simplefin_connected: bool = False
+    simplefin_status: str | None = None
+
+
+class AuthSetupRequest(BaseModel):
+    email: str
+    password: str
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class ClaimSimplefinRequest(BaseModel):
     setup_token: str
 
@@ -230,19 +248,6 @@ class CategoryPatchRequest(BaseModel):
     icon: str | None = Field(default=None, max_length=50)
 
 
-class TransferResponse(BaseModel):
-    id: int
-    txn_out_id: str
-    txn_in_id: str
-    confidence: float
-    status: str
-    created_at: datetime
-
-
-class TransferPatchRequest(BaseModel):
-    status: str = Field(pattern="^(confirmed|rejected|auto_confirmed|proposed)$")
-
-
 class SettingsResponse(BaseModel):
     sync_daily_hour: int
     sync_daily_minute: int
@@ -297,9 +302,171 @@ class EmailReportSendResponse(BaseModel):
     transaction_count: int = 0
 
 
+class AdvisorReportGenerateRequest(BaseModel):
+    days: int = Field(default=30, ge=7, le=366)
+    end_date: date | None = None
+    include_pending: bool = True
+    include_transfers: bool = False
+    hash_merchants: bool = True
+    round_amounts: bool = False
+
+
+class AdvisorReportGenerateResponse(BaseModel):
+    start: str
+    end: str
+    days: int
+    stats: dict[str, Any]
+    charts: dict[str, Any]
+    scrubbed_payload: dict[str, Any]
+    prompt_markdown: str
+
+
+class AdvisorEmailPreviewRequest(BaseModel):
+    days: int = Field(default=30, ge=7, le=366)
+    end_date: date | None = None
+    include_pending: bool = True
+    include_transfers: bool = False
+    hash_merchants: bool = True
+    round_amounts: bool = False
+    advisor_response: str = ""
+    recipients: str | None = None
+
+
+class AdvisorEmailPreviewResponse(BaseModel):
+    subject: str
+    recipients: str
+    markdown_body: str
+    html_body: str
+    start: str
+    end: str
+    days: int
+    stats: dict[str, Any]
+    charts: dict[str, Any]
+
+
+class AdvisorEmailSendRequest(AdvisorEmailPreviewRequest):
+    pass
+
+
+class AdvisorEmailSendResponse(BaseModel):
+    sent: bool
+    reason: str | None = None
+    subject: str | None = None
+    recipients: str = ""
+    recipient_count: int = 0
+    start: str | None = None
+    end: str | None = None
+
+
 class ProjectionRequest(BaseModel):
     start: date
     end: date
     utility_inflation_rate: float = 0.0
     general_inflation_rate: float = 0.0
     savings_apr: float = 0.0
+
+
+class BudgetCategoryPlanRow(BaseModel):
+    category_id: int
+    category_name: str
+    category_path: str
+    parent_category_name: str | None = None
+    planned_amount: float
+    actual_amount: float
+    remaining_amount: float
+    last_month_actual: float
+    avg_3_month_actual: float
+    is_fixed: bool
+    is_essential: bool
+    rollover_mode: str = Field(pattern="^(none|surplus_only|next_month_cover)$")
+
+
+class BudgetFamilySummary(BaseModel):
+    family: str
+    planned_amount: float
+    actual_amount: float
+    remaining_amount: float
+    essential_planned: float
+    discretionary_planned: float
+
+
+class BudgetMonthResponse(BaseModel):
+    month_start: date
+    income_target: float
+    starting_cash: float
+    planned_savings: float
+    suggested_income_target: float
+    suggested_planned_savings: float
+    leftover_strategy: str
+    income_available: float
+    planned_spending: float
+    actual_spending: float
+    remaining_to_budget: float
+    essential_planned: float
+    discretionary_planned: float
+    rows: list[BudgetCategoryPlanRow]
+    family_summaries: list[BudgetFamilySummary]
+
+
+class BudgetCategoryPlanPatch(BaseModel):
+    category_id: int
+    planned_amount: float = Field(default=0.0, ge=0.0)
+    is_fixed: bool = False
+    is_essential: bool = True
+    rollover_mode: str = Field(default="none", pattern="^(none|surplus_only|next_month_cover)$")
+
+
+class BudgetMonthPatchRequest(BaseModel):
+    month_start: date
+    income_target: float = 0.0
+    starting_cash: float = 0.0
+    planned_savings: float = 0.0
+    leftover_strategy: str = Field(
+        default="unassigned", pattern="^(unassigned|send_to_savings|send_to_debt)$"
+    )
+    rows: list[BudgetCategoryPlanPatch]
+
+
+class BudgetPeriodFamilySummary(BaseModel):
+    family: str
+    amount: float
+    subcategories: list[dict[str, Any]]
+
+
+class BudgetPeriodTrendPoint(BaseModel):
+    label: str
+    start: date
+    end: date
+    total: float
+    families: dict[str, float]
+
+
+class BudgetPeriodResponse(BaseModel):
+    period: str
+    start: date
+    end: date
+    total_spend: float
+    families: list[BudgetPeriodFamilySummary]
+    trend: list[BudgetPeriodTrendPoint]
+
+
+class RecurringPaymentCandidate(BaseModel):
+    label: str
+    category_name: str
+    family_name: str
+    cadence: str
+    occurrences: int
+    average_amount: float
+    estimated_monthly_cost: float
+    last_amount: float
+    last_posted_at: date
+    next_expected_at: date
+    is_cancel_candidate: bool
+
+
+class BudgetRecurringResponse(BaseModel):
+    as_of: date
+    estimated_monthly_total: float
+    estimated_monthly_cancelable: float
+    cancel_candidates: list[RecurringPaymentCandidate]
+    essential_candidates: list[RecurringPaymentCandidate]

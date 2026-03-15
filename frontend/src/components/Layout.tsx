@@ -1,17 +1,35 @@
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useEffect, useMemo, useState } from 'react';
 
-import { WORKSPACE_SECTIONS } from '../pages/WorkspacePage';
+import { apiFetch } from '../api';
+import {
+  getWorkspaceSection,
+  PRIMARY_MOBILE_SECTION_IDS,
+  WORKSPACE_DEFAULT_SECTION_ID,
+  WORKSPACE_GROUP_LABELS,
+  WORKSPACE_SECTIONS
+} from '../workspace/sections';
 
 export function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
-  const [activeId, setActiveId] = useState(WORKSPACE_SECTIONS[0]?.id ?? '');
   const [isMobile, setIsMobile] = useState(false);
-  const [navOpen, setNavOpen] = useState(true);
-  const sectionIds = useMemo(
-    () => WORKSPACE_SECTIONS.map((section) => section.id),
+  const [navOpen, setNavOpen] = useState(false);
+  const routeSectionId =
+    location.pathname.split('/').filter(Boolean)[0] ?? WORKSPACE_DEFAULT_SECTION_ID;
+  const activeSection = getWorkspaceSection(routeSectionId);
+  const activeId = activeSection.id;
+  const groupedSections = useMemo(
+    () =>
+      Object.entries(WORKSPACE_GROUP_LABELS).map(([group, label]) => ({
+        group,
+        label,
+        sections: WORKSPACE_SECTIONS.filter((section) => section.group === group)
+      })),
     []
+  );
+  const mobilePrimarySections = WORKSPACE_SECTIONS.filter((section) =>
+    PRIMARY_MOBILE_SECTION_IDS.includes(section.id)
   );
 
   useEffect(() => {
@@ -23,8 +41,7 @@ export function Layout() {
         setNavOpen(false);
         return;
       }
-      const saved = window.localStorage.getItem('bt_nav_open');
-      setNavOpen(saved ? saved === '1' : true);
+      setNavOpen(true);
     };
     apply();
     media.addEventListener('change', apply);
@@ -32,53 +49,41 @@ export function Layout() {
   }, []);
 
   useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
-        if (visible?.target?.id) {
-          setActiveId(visible.target.id);
-        }
-      },
-      { rootMargin: '-20% 0px -65% 0px', threshold: [0.2, 0.5, 0.8] }
-    );
-
-    for (const id of sectionIds) {
-      const element = document.getElementById(id);
-      if (element) observer.observe(element);
+    if (isMobile) {
+      setNavOpen(false);
     }
-
-    return () => observer.disconnect();
-  }, [location.pathname, sectionIds]);
-
-  function jumpToSection(id: string) {
-    if (location.pathname !== '/') {
-      navigate(`/#${id}`);
-      return;
+    const content = document.querySelector('.content');
+    if (
+      content instanceof HTMLElement &&
+      typeof content.scrollTo === 'function'
+    ) {
+      content.scrollTo({ top: 0, behavior: 'auto' });
     }
-    const element = document.getElementById(id);
-    if (!element) return;
-    window.history.replaceState(null, '', `#${id}`);
-    element.scrollIntoView({ behavior: 'auto', block: 'start' });
+  }, [isMobile, location.pathname]);
+
+  function openSection(id: string) {
+    if (id !== activeId) {
+      navigate(`/${id}`);
+    }
     if (isMobile) {
       setNavOpen(false);
     }
   }
 
-  function logout() {
+  async function logout() {
     const confirmed = window.confirm('Log out of Budget Tracker?');
     if (!confirmed) return;
-    localStorage.removeItem('bt_logged_in');
+    try {
+      await apiFetch('/api/auth/logout', { method: 'POST' });
+    } catch {
+      // Ignore logout API failures and still route back to login.
+    }
     navigate('/login', { replace: true });
   }
 
   function toggleNav() {
     setNavOpen((prev) => {
       const next = !prev;
-      if (!isMobile) {
-        window.localStorage.setItem('bt_nav_open', next ? '1' : '0');
-      }
       return next;
     });
   }
@@ -93,22 +98,37 @@ export function Layout() {
         <div className="sidebar-head">
           <h1>Budget Tracker</h1>
         </div>
-        <nav>
-          {WORKSPACE_SECTIONS.map((section) => (
-            <button
-              key={section.id}
-              type="button"
-              className={activeId === section.id ? 'active' : ''}
-              onClick={() => jumpToSection(section.id)}
-            >
-              {section.label}
-            </button>
-          ))}
-          <button type="button" onClick={logout}>
-            Logout
-          </button>
-        </nav>
+        <p className="sidebar-subtitle">Focus Workspace</p>
+        {groupedSections.map((group) => (
+          <div key={group.group} className="sidebar-group">
+            <h2>{group.label}</h2>
+            <nav>
+              {group.sections.map((section) => (
+                <button
+                  key={section.id}
+                  type="button"
+                  className={activeId === section.id ? 'active' : ''}
+                  onClick={() => openSection(section.id)}
+                >
+                  <span>{section.label}</span>
+                  <small>{section.description}</small>
+                </button>
+              ))}
+            </nav>
+          </div>
+        ))}
+        <button type="button" className="sidebar-logout" onClick={logout}>
+          Logout
+        </button>
       </aside>
+      {isMobile && navOpen && (
+        <button
+          type="button"
+          className="sidebar-scrim"
+          aria-label="Close navigation"
+          onClick={() => setNavOpen(false)}
+        />
+      )}
       <button
         type="button"
         className={`sidebar-edge-toggle ${isMobile ? 'mobile' : 'desktop'} ${
@@ -130,8 +150,40 @@ export function Layout() {
         </svg>
       </button>
       <main className="content">
+        <header className="workspace-focus-bar">
+          <div>
+            <span className="workspace-eyebrow">
+              {WORKSPACE_GROUP_LABELS[activeSection.group]}
+            </span>
+            <h2>{activeSection.label}</h2>
+          </div>
+          {isMobile && (
+            <button
+              type="button"
+              className="secondary"
+              onClick={toggleNav}
+              aria-expanded={navOpen}
+            >
+              Browse Modules
+            </button>
+          )}
+        </header>
         <Outlet />
       </main>
+      {isMobile && (
+        <nav className="mobile-dock" aria-label="Primary modules">
+          {mobilePrimarySections.map((section) => (
+            <button
+              key={section.id}
+              type="button"
+              className={activeId === section.id ? 'active' : ''}
+              onClick={() => openSection(section.id)}
+            >
+              {section.shortLabel}
+            </button>
+          ))}
+        </nav>
+      )}
     </div>
   );
 }

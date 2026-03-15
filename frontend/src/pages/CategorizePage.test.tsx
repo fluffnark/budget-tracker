@@ -29,8 +29,10 @@ function baseTransactions() {
 }
 
 describe('CategorizePage', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
   beforeEach(() => {
-    const fetchMock = vi.fn(
+    fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.includes('/api/settings')) {
@@ -119,6 +121,26 @@ describe('CategorizePage', () => {
       screen.getByRole('button', { name: /Transactions \(1\)/i })
     ).toBeInTheDocument();
     expect(screen.getByTestId('categorize-layout')).toBeInTheDocument();
+  });
+
+  it('requests grouped sankey data for the studio chart', async () => {
+    render(
+      <MemoryRouter>
+        <CategorizePage />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('COFFEE SHOP')).toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).includes('mode=account_to_grouped_category')
+        )
+      ).toBe(true);
+    });
   });
 
   it('auto-categorize button shows loading state and opens review modal', async () => {

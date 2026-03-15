@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Category, ClassificationRule, Transaction, Transfer
+from app.models import Account, Category, ClassificationRule, Transaction, Transfer
 
 
 def _claim_and_sync(client):
@@ -34,6 +34,181 @@ def test_idempotent_ingestion_no_duplicates(client, db_session: Session):
     count2 = db_session.execute(select(Transaction)).scalars().all()
 
     assert len(count1) == len(count2)
+
+
+def test_simplefin_shared_account_is_deduplicated(client, db_session: Session, fixture_path, fixture_backup):
+    payload = {
+        "accounts": [
+            {
+                "id": "wealthfront-cash-primary",
+                "name": "Wealthfront Cash",
+                "type": "savings",
+                "currency": "USD",
+                "institution": {"name": "Wealthfront"},
+                "balance": {
+                    "id": "wf-shared-balance-1",
+                    "current": 12000.0,
+                    "available": 12000.0,
+                    "as_of": "2026-03-01T12:00:00Z",
+                },
+                "transactions": [
+                    {
+                        "id": "wf-txn-1",
+                        "posted": "2026-03-01",
+                        "amount": 25.0,
+                        "description": "INTEREST PAYMENT",
+                        "pending": False,
+                    }
+                ],
+            },
+            {
+                "id": "wealthfront-cash-shared-wrapper",
+                "name": "Wealthfront Cash",
+                "type": "savings",
+                "currency": "USD",
+                "institution": {"name": "Wealthfront"},
+                "balance": {
+                    "id": "wf-shared-balance-1",
+                    "current": 12000.0,
+                    "available": 12000.0,
+                    "as_of": "2026-03-01T12:00:00Z",
+                },
+                "transactions": [
+                    {
+                        "id": "wf-txn-1",
+                        "posted": "2026-03-01",
+                        "amount": 25.0,
+                        "description": "INTEREST PAYMENT",
+                        "pending": False,
+                    }
+                ],
+            },
+        ]
+    }
+    fixture_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    _claim_and_sync(client)
+
+    accounts = db_session.execute(
+        select(Account).where(Account.name == "Wealthfront Cash")
+    ).scalars().all()
+    transactions = db_session.execute(
+        select(Transaction).where(Transaction.description_norm.like("%INTEREST PAYMENT%"))
+    ).scalars().all()
+
+    assert len(accounts) == 1
+    assert accounts[0].provider_account_id == "wealthfront-cash-shared-wrapper"
+    assert accounts[0].provider_meta["simplefin_balance_ids"] == ["wf-shared-balance-1"]
+    assert len(transactions) == 1
+
+
+def test_simplefin_duplicate_payload_signature_is_deduplicated(
+    client, db_session: Session, fixture_path, fixture_backup
+):
+    payload = {
+        "accounts": [
+            {
+                "id": "wf-wrapper-a",
+                "name": "Joint 3.30% APY (2095)",
+                "type": "other",
+                "currency": "USD",
+                "balance": "44282.54",
+                "available-balance": "44282.54",
+                "balance-date": 1773534140,
+                "transactions": [],
+                "holdings": [],
+                "org": {
+                    "domain": "www.wealthfront.com",
+                    "name": "Wealthfront",
+                    "id": "www.wealthfront.com",
+                },
+            },
+            {
+                "id": "wf-wrapper-b",
+                "name": "Joint 3.30% APY (2095)",
+                "type": "other",
+                "currency": "USD",
+                "balance": "44282.54",
+                "available-balance": "44282.54",
+                "balance-date": 1773534630,
+                "transactions": [],
+                "holdings": [],
+                "org": {
+                    "domain": "www.wealthfront.com",
+                    "name": "Wealthfront",
+                    "id": "www.wealthfront.com",
+                },
+            },
+        ]
+    }
+    fixture_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    _claim_and_sync(client)
+
+    accounts = db_session.execute(
+        select(Account).where(Account.name == "Joint 3.30% APY (2095)")
+    ).scalars().all()
+
+    assert len(accounts) == 1
+    assert set(accounts[0].provider_meta["simplefin_alias_ids"]) == {
+        "wf-wrapper-a",
+        "wf-wrapper-b",
+    }
+    assert len(accounts[0].provider_meta["simplefin_payload_signatures"]) == 1
+
+
+def test_simplefin_distinct_name_suffix_accounts_are_not_deduplicated(
+    client, db_session: Session, fixture_path, fixture_backup
+):
+    payload = {
+        "accounts": [
+            {
+                "id": "wf-0630",
+                "name": "Joint 3.30% APY (0630)",
+                "type": "other",
+                "currency": "USD",
+                "balance": "3812.23",
+                "available-balance": "3812.23",
+                "balance-date": 1773534140,
+                "transactions": [],
+                "holdings": [],
+                "org": {
+                    "domain": "www.wealthfront.com",
+                    "name": "Wealthfront",
+                    "id": "www.wealthfront.com",
+                },
+            },
+            {
+                "id": "wf-2095",
+                "name": "Joint 3.30% APY (2095)",
+                "type": "other",
+                "currency": "USD",
+                "balance": "44282.54",
+                "available-balance": "44282.54",
+                "balance-date": 1773534630,
+                "transactions": [],
+                "holdings": [],
+                "org": {
+                    "domain": "www.wealthfront.com",
+                    "name": "Wealthfront",
+                    "id": "www.wealthfront.com",
+                },
+            },
+        ]
+    }
+    fixture_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    _claim_and_sync(client)
+
+    accounts = db_session.execute(
+        select(Account).where(Account.name.like("Joint 3.30% APY%")).order_by(Account.name)
+    ).scalars().all()
+
+    assert [account.name for account in accounts] == [
+        "Joint 3.30% APY (0630)",
+        "Joint 3.30% APY (2095)",
+    ]
+    assert [account.provider_account_id for account in accounts] == ["wf-0630", "wf-2095"]
 
 
 def test_pending_to_posted_reconciliation(
@@ -267,6 +442,62 @@ def test_reports_exclude_transfers_from_spend(client):
 
     assert outflow_with >= outflow_without
     assert outflow_with - outflow_without >= 800
+
+
+def test_sankey_groups_parent_and_leaf_categories(client, db_session: Session):
+    _claim_and_sync(client)
+
+    groceries_id = db_session.execute(select(Category.id).where(Category.name == "Groceries")).scalar_one()
+    utilities_id = db_session.execute(
+        select(Category.id).where(Category.name == "Utilities/Internet")
+    ).scalar_one()
+
+    txns = db_session.execute(select(Transaction).limit(3)).scalars().all()
+    assert len(txns) == 3
+
+    txns[0].category_id = groceries_id
+    txns[0].transfer_id = None
+    txns[0].amount = -84.25
+    txns[0].posted_at = datetime(2026, 2, 10, tzinfo=UTC)
+
+    txns[1].category_id = utilities_id
+    txns[1].transfer_id = None
+    txns[1].amount = -61.10
+    txns[1].posted_at = datetime(2026, 2, 11, tzinfo=UTC)
+
+    txns[2].category_id = groceries_id
+    txns[2].transfer_id = None
+    txns[2].amount = -42.00
+    txns[2].posted_at = datetime(2026, 2, 12, tzinfo=UTC)
+    db_session.commit()
+
+    response = client.get(
+        "/api/analytics/sankey",
+        params={
+            "start": "2026-02-01",
+            "end": "2026-02-28",
+            "include_pending": 1,
+            "include_transfers": 0,
+            "mode": "account_to_grouped_category",
+        },
+    )
+    assert response.status_code == 200
+
+    payload = response.json()
+    groups = {node["name"] for node in payload["nodes"] if node["kind"] == "group"}
+    finals = {node["name"] for node in payload["nodes"] if node["kind"] == "category"}
+
+    assert "Food" in groups
+    assert "Utilities" in groups
+    assert "Groceries" in finals
+    assert "Utilities/Internet" in finals or "Internet" in finals
+
+
+def test_transfer_review_endpoints_removed(client):
+    _claim_and_sync(client)
+
+    assert client.get("/api/transfers").status_code == 404
+    assert client.patch("/api/transfers/1", json={"status": "confirmed"}).status_code == 404
 
 
 def test_suggest_excludes_categorized_and_transfers_by_default(client, db_session: Session):

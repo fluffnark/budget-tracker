@@ -12,13 +12,30 @@ type Props = {
   title: string;
   intro?: ReactNode;
   sections: SectionDefinition[];
+  expandAllByDefault?: boolean;
 };
 
 function storageKey(pageKey: string) {
   return `bt_sections_${pageKey}`;
 }
 
-export function SectionLayout({ pageKey, title, intro, sections }: Props) {
+function defaultCollapsedFor(
+  section: SectionDefinition,
+  index: number,
+  expandAllByDefault: boolean
+): boolean {
+  if (expandAllByDefault) return false;
+  if (section.defaultCollapsed != null) return Boolean(section.defaultCollapsed);
+  return index > 0;
+}
+
+export function SectionLayout({
+  pageKey,
+  title,
+  intro,
+  sections,
+  expandAllByDefault = false
+}: Props) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [activeId, setActiveId] = useState<string>(sections[0]?.id ?? '');
   const sectionIds = useMemo(
@@ -31,8 +48,12 @@ export function SectionLayout({ pageKey, title, intro, sections }: Props) {
     const saved = window.localStorage.getItem(storageKey(pageKey));
     if (!saved) {
       const defaults: Record<string, boolean> = {};
-      for (const section of sections) {
-        defaults[section.id] = Boolean(section.defaultCollapsed);
+      for (const [index, section] of sections.entries()) {
+        defaults[section.id] = defaultCollapsedFor(
+          section,
+          index,
+          expandAllByDefault
+        );
       }
       setCollapsed(defaults);
       return;
@@ -40,15 +61,16 @@ export function SectionLayout({ pageKey, title, intro, sections }: Props) {
     try {
       const parsed = JSON.parse(saved) as Record<string, boolean>;
       const merged: Record<string, boolean> = {};
-      for (const section of sections) {
+      for (const [index, section] of sections.entries()) {
         merged[section.id] =
-          parsed[section.id] ?? Boolean(section.defaultCollapsed);
+          parsed[section.id] ??
+          defaultCollapsedFor(section, index, expandAllByDefault);
       }
       setCollapsed(merged);
     } catch {
       setCollapsed({});
     }
-  }, [pageKey, sectionIdsKey]);
+  }, [pageKey, sectionIdsKey, expandAllByDefault]);
 
   useEffect(() => {
     window.localStorage.setItem(storageKey(pageKey), JSON.stringify(collapsed));
@@ -110,9 +132,10 @@ export function SectionLayout({ pageKey, title, intro, sections }: Props) {
       <div className="section-main">
         <h2>{title}</h2>
         {intro}
-        {orderedSections.map((section) => {
+        {orderedSections.map((section, index) => {
           const isCollapsed =
-            collapsed[section.id] ?? Boolean(section.defaultCollapsed);
+            collapsed[section.id] ??
+            defaultCollapsedFor(section, index, expandAllByDefault);
           return (
             <section
               key={section.id}
