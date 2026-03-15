@@ -296,6 +296,18 @@ class ExportResponse(BaseModel):
     prompt_template: str
 
 
+class SheetsExportSheetResponse(BaseModel):
+    name: str
+    columns: list[str]
+    rows: list[list[Any]]
+
+
+class SheetsExportResponse(BaseModel):
+    workbook_name: str
+    generated_at: str
+    sheets: list[SheetsExportSheetResponse]
+
+
 class EmailReportSendResponse(BaseModel):
     sent: bool
     reason: str | None = None

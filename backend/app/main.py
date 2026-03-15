@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
+from io import BytesIO
+from zipfile import ZIP_DEFLATED, ZipFile
 from datetime import date, datetime, timedelta
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.orm import Session
 
@@ -67,6 +70,7 @@ from app.schemas import (
     RulePreviewResponse,
     RuleResponse,
     SankeyResponse,
+    SheetsExportResponse,
     SettingsPatchRequest,
     SettingsResponse,
     SyncRunRequest,
@@ -93,7 +97,7 @@ from app.services.budgeting import (
     save_budget_month_snapshot,
 )
 from app.services.categorization_suggest import suggest_categories
-from app.services.exporter import build_llm_export
+from app.services.exporter import build_llm_export, build_sheets_export, build_sheets_xlsx
 from app.services.email_reports import send_monthly_email_report, set_smtp_password
 from app.services.ingest import SyncError, run_sync
 from app.services.reports import (
@@ -996,6 +1000,100 @@ def export_llm(
     )
     prompt = payload.pop("prompt_template")
     return ExportResponse(payload=payload, prompt_template=prompt)
+
+
+@app.get("/api/export/sheets", response_model=SheetsExportResponse)
+def export_sheets(
+    start: date,
+    end: date,
+    scrub: bool = True,
+    hash_merchants: bool = True,
+    round_amounts: bool = False,
+    _: Owner = Depends(get_current_owner),
+    db: Session = Depends(get_db),
+) -> SheetsExportResponse:
+    return SheetsExportResponse.model_validate(
+        build_sheets_export(
+            db,
+            start=start,
+            end=end,
+            scrub=scrub,
+            hash_merchants=hash_merchants,
+            round_amounts=round_amounts,
+        )
+    )
+
+
+@app.get("/api/export/sheets.zip")
+def export_sheets_zip(
+    start: date,
+    end: date,
+    scrub: bool = True,
+    hash_merchants: bool = True,
+    round_amounts: bool = False,
+    _: Owner = Depends(get_current_owner),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    workbook = build_sheets_export(
+        db,
+        start=start,
+        end=end,
+        scrub=scrub,
+        hash_merchants=hash_merchants,
+        round_amounts=round_amounts,
+    )
+
+    def quote_csv_cell(value: object | None) -> str:
+        if value is None:
+            return ""
+        text = str(value)
+        if any(char in text for char in [",", "\"", "\n"]):
+            return f"\"{text.replace('\"', '\"\"')}\""
+        return text
+
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
+        for sheet in workbook["sheets"]:
+            rows = [sheet["columns"], *sheet["rows"]]
+            contents = "\n".join(
+                ",".join(quote_csv_cell(cell) for cell in row) for row in rows
+            )
+            archive.writestr(f"{sheet['name']}.csv", contents)
+
+    buffer.seek(0)
+    filename = f"{workbook['workbook_name']}.zip"
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/export/sheets.xlsx")
+def export_sheets_xlsx(
+    start: date,
+    end: date,
+    scrub: bool = True,
+    hash_merchants: bool = True,
+    round_amounts: bool = False,
+    _: Owner = Depends(get_current_owner),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    workbook = build_sheets_export(
+        db,
+        start=start,
+        end=end,
+        scrub=scrub,
+        hash_merchants=hash_merchants,
+        round_amounts=round_amounts,
+    )
+    xlsx_bytes = build_sheets_xlsx(workbook)
+    filename = f"{workbook['workbook_name']}.xlsx"
+    return StreamingResponse(
+        BytesIO(xlsx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/settings", response_model=SettingsResponse)

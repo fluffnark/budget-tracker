@@ -31,6 +31,7 @@ export function SankeyChart({
   focused?: boolean;
 }) {
   const [hovered, setHovered] = useState<string>('');
+  const [selectedDetail, setSelectedDetail] = useState<string>('');
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
@@ -100,6 +101,8 @@ export function SankeyChart({
     hasGroupedFlow
       ? Math.max(height, maxNodesPerColumn * (compact ? 52 : 42) + 140)
       : height;
+  const renderedWidth = Math.max(contentWidth, compact ? containerWidth : 0);
+  const renderedHeight = contentHeight;
 
   const generator = useMemo(
     () =>
@@ -376,6 +379,11 @@ export function SankeyChart({
     setPan({ x: 0, y: 0 });
   }
 
+  function showDetail(detail: string) {
+    setHovered(detail);
+    setSelectedDetail(detail);
+  }
+
   function readTouchDistance(event: ReactTouchEvent<SVGSVGElement>) {
     if (event.touches.length < 2) return 0;
     const a = event.touches[0];
@@ -488,13 +496,26 @@ export function SankeyChart({
       className={`sankey-shell${interactionEnabled ? ' interaction-on' : ''}`}
     >
       <p className="sankey-hover">
-        {hovered ||
+        {selectedDetail ||
+          hovered ||
           (hasGroupedFlow
             ? 'Flow reads left to right: accounts, category groups, then final categories.'
             : isCoarsePointer
-              ? 'Pinch to zoom and drag to pan.'
+              ? 'Tap a node or flow for details. Pinch to zoom and drag to pan.'
               : 'Click chart to enable zoom/pan. When disabled, page scroll works normally.')}
       </p>
+      {isCoarsePointer && (
+        <div className="row-actions" style={{ marginBottom: 8 }}>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => setSelectedDetail('')}
+            disabled={!selectedDetail}
+          >
+            Clear pinned detail
+          </button>
+        </div>
+      )}
       <div className="row-actions" style={{ marginBottom: 8 }}>
         <button
           type="button"
@@ -529,7 +550,6 @@ export function SankeyChart({
       </div>
       <svg
         ref={svgRef}
-        viewBox={`0 0 ${contentWidth} ${contentHeight}`}
         className="sankey-svg"
         role="img"
         aria-label="Sankey chart"
@@ -545,6 +565,8 @@ export function SankeyChart({
         onTouchCancel={handleTouchEnd}
         onDoubleClick={resetView}
         style={{
+          width: `${renderedWidth}px`,
+          height: `${renderedHeight}px`,
           cursor: interactionEnabled ? (dragging ? 'grabbing' : 'grab') : 'default'
         }}
       >
@@ -572,6 +594,7 @@ export function SankeyChart({
                     opacity={0.38}
                     onMouseEnter={() => setHovered(label)}
                     onMouseLeave={() => setHovered('')}
+                    onClick={() => showDetail(label)}
                   >
                     <title>{label}</title>
                   </path>
@@ -611,20 +634,26 @@ export function SankeyChart({
                   displayName,
                   isMiddleColumn
                     ? compact
-                      ? 14
+                      ? isCoarsePointer
+                        ? 16
+                        : 14
                       : 18
                     : isFinalColumn
                       ? expanded
                         ? 20
                         : compact
-                          ? 14
+                          ? isCoarsePointer
+                            ? 18
+                            : 14
                           : 16
                       : expanded
                         ? 28
                         : compact
-                          ? 18
+                          ? isCoarsePointer
+                            ? 22
+                            : 18
                           : 24,
-                  compact ? 1 : 2
+                  compact && isCoarsePointer ? 1 : compact ? 1 : 2
                 );
                 return (
                   <g key={idx}>
@@ -636,17 +665,26 @@ export function SankeyChart({
                       fill={nodeColor}
                       onMouseEnter={() => setHovered(label)}
                       onMouseLeave={() => setHovered('')}
+                      onClick={() => showDetail(label)}
                     >
                       <title>{label}</title>
                     </rect>
                     <text
                       x={textX}
                       y={y + (compact ? 11 : 12)}
-                      fontSize={compact ? 11.5 : expanded ? 14 : 12.5}
+                      fontSize={
+                        compact
+                          ? isCoarsePointer
+                            ? 14
+                            : 13
+                          : expanded
+                            ? 15
+                            : 13
+                      }
                       fill="var(--fg)"
                       textAnchor={textAnchor}
                       stroke="var(--card-bg)"
-                      strokeWidth={compact ? 3.5 : expanded ? 4 : 3}
+                      strokeWidth={compact ? 4 : expanded ? 4.5 : 3.25}
                       paintOrder="stroke"
                     >
                       {labelLines.map((line, lineIdx) => (
@@ -673,7 +711,7 @@ export function SankeyChart({
               key={column.kind}
               x={column.x}
               y={20}
-              fontSize={compact ? 12 : 13}
+              fontSize={compact ? 13 : 13}
               fontWeight={700}
               textAnchor="middle"
               fill="var(--text-muted)"

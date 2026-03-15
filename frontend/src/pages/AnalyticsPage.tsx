@@ -183,6 +183,8 @@ export function AnalyticsPage() {
   const [autoSyncMortgageFromAccount, setAutoSyncMortgageFromAccount] =
     useState(true);
   const [sankeyCategoryIds, setSankeyCategoryIds] = useState<string[]>([]);
+  const [sankeyPickerValue, setSankeyPickerValue] = useState('');
+  const [sankeySearch, setSankeySearch] = useState('');
   const [sankeyMaxCategoriesPerGroup, setSankeyMaxCategoriesPerGroup] = useState(6);
   const [isMobile, setIsMobile] = useState(false);
 
@@ -373,6 +375,49 @@ export function AnalyticsPage() {
       .map((value) => categoryPathLabel.get(Number(value)))
       .filter((value): value is string => Boolean(value));
   }, [categoryPathLabel, sankeyCategoryIds]);
+
+  const filteredCategoryOptions = useMemo(() => {
+    const search = sankeySearch.trim().toLowerCase();
+    return categories
+      .filter((category) => !sankeyCategoryIds.includes(String(category.id)))
+      .filter((category) => {
+        if (!search) return true;
+        const path = categoryPathLabel.get(category.id)?.toLowerCase() ?? category.name.toLowerCase();
+        return path.includes(search) || category.system_kind.toLowerCase().includes(search);
+      })
+      .slice(0, 80);
+  }, [categories, sankeyCategoryIds, sankeySearch, categoryPathLabel]);
+
+  const sankeyPresetGroups = useMemo(() => {
+    const findMatching = (terms: string[]) =>
+      categories
+        .filter((category) => {
+          const path = (categoryPathLabel.get(category.id) ?? category.name).toLowerCase();
+          return terms.some((term) => path.includes(term));
+        })
+        .map((category) => String(category.id));
+
+    return [
+      { label: 'Mortgage', ids: findMatching(['mortgage']) },
+      { label: 'Transfers', ids: findMatching(['transfer']) },
+      { label: 'Savings', ids: findMatching(['savings', 'roth', 'investment']) },
+      { label: 'Utilities', ids: findMatching(['utilities']) },
+    ].filter((preset) => preset.ids.length > 0);
+  }, [categories, categoryPathLabel]);
+
+  function addSankeyCategory(categoryId: string) {
+    if (!categoryId || sankeyCategoryIds.includes(categoryId)) return;
+    setSankeyCategoryIds((prev) => [...prev, categoryId]);
+    setSankeyPickerValue('');
+  }
+
+  function removeSankeyCategory(categoryId: string) {
+    setSankeyCategoryIds((prev) => prev.filter((value) => value !== categoryId));
+  }
+
+  function addSankeyPreset(ids: string[]) {
+    setSankeyCategoryIds((prev) => [...new Set([...prev, ...ids])]);
+  }
 
   const accountBalanceRows = useMemo(() => {
     return accounts
@@ -565,28 +610,55 @@ export function AnalyticsPage() {
                 </select>
               </label>
               <label>
-                Focused category paths
-                <select
-                  multiple
-                  value={sankeyCategoryIds}
-                  onChange={(e) =>
-                    setSankeyCategoryIds(
-                      Array.from(e.target.selectedOptions, (option) => option.value)
-                    )
-                  }
-                  size={Math.min(isMobile ? 6 : 8, Math.max(4, categories.length))}
-                >
-                  {categories.map((cat) => (
-                    <option key={cat.id} value={cat.id}>
-                      {categoryPathLabel.get(cat.id) ?? cat.name}
-                    </option>
-                  ))}
-                </select>
+                Find categories to focus
+                <input
+                  type="search"
+                  value={sankeySearch}
+                  onChange={(e) => setSankeySearch(e.target.value)}
+                  placeholder="Search mortgage, transfers, roth, utilities..."
+                />
                 <small>
-                  Select parent families or leaves. Parent selections include child
-                  categories.
+                  Add parent families or leaves. Parent selections include child categories.
                 </small>
               </label>
+              <div className="sankey-focus-picker">
+                <label>
+                  Add focused category
+                  <select
+                    value={sankeyPickerValue}
+                    onChange={(e) => setSankeyPickerValue(e.target.value)}
+                  >
+                    <option value="">Select category path</option>
+                    {filteredCategoryOptions.map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {categoryPathLabel.get(cat.id) ?? cat.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => addSankeyCategory(sankeyPickerValue)}
+                  disabled={!sankeyPickerValue}
+                >
+                  Add focus
+                </button>
+              </div>
+              {sankeyPresetGroups.length > 0 && (
+                <div className="sankey-presets">
+                  {sankeyPresetGroups.map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      className="secondary"
+                      onClick={() => addSankeyPreset(preset.ids)}
+                    >
+                      Focus {preset.label}
+                    </button>
+                  ))}
+                </div>
+              )}
               <label>
                 Detail depth per group
                 <input
@@ -606,16 +678,31 @@ export function AnalyticsPage() {
               </label>
               {focusedCategorySummary.length > 0 && (
                 <>
-                  <p className="category-editor-note">
-                    Focused on: {focusedCategorySummary.join(', ')}
-                  </p>
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => setSankeyCategoryIds([])}
-                  >
-                    Clear category focus
-                  </button>
+                  <div className="sankey-focus-chips">
+                    {sankeyCategoryIds.map((categoryId) => (
+                      <button
+                        key={categoryId}
+                        type="button"
+                        className="sankey-focus-chip"
+                        onClick={() => removeSankeyCategory(categoryId)}
+                      >
+                        <span>{categoryPathLabel.get(Number(categoryId)) ?? categoryId}</span>
+                        <strong>×</strong>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="row-actions">
+                    <p className="category-editor-note">
+                      Focused on {focusedCategorySummary.length} categories.
+                    </p>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => setSankeyCategoryIds([])}
+                    >
+                      Clear category focus
+                    </button>
+                  </div>
                 </>
               )}
             </div>

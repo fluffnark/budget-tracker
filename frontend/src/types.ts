@@ -255,3 +255,15 @@ export type AdvisorEmailSendResponse = {
   start?: string | null;
   end?: string | null;
 };
+
+export type SheetsExportSheet = {
+  name: string;
+  columns: string[];
+  rows: Array<Array<string | number | boolean | null>>;
+};
+
+export type SheetsExportResponse = {
+  workbook_name: string;
+  generated_at: string;
+  sheets: SheetsExportSheet[];
+};
