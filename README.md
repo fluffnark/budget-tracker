@@ -17,11 +17,23 @@ A local-first budget tracking app with SimpleFIN ingestion, transfer deconflicti
    - Put that value into `MASTER_KEY` in `.env`.
 3. Optional: override local ports in `.env` if conflicts exist:
    - `DB_PORT`, `BACKEND_PORT`, `FRONTEND_PORT`, `VITE_API_BASE`
-4. Start app:
-   - `make dev`
-5. Open:
-   - Frontend: `http://127.0.0.1:5173`
-   - Backend health: `http://127.0.0.1:8000/api/health`
+4. Start the app with the repo tmux launcher:
+   - `./start_app.sh`
+   - Fast local restart: `./start_app.sh --docker-fast`
+5. Open the app:
+   - Frontend: `http://127.0.0.1:5173/budget/`
+   - Backend health: `http://127.0.0.1:58010/api/health`
+6. First run only:
+   - Open `/budget/login`
+   - Create the single owner account for this machine
+   - Passwords are stored with Argon2 hashes
+7. Connect SimpleFIN:
+   - Open `Settings`
+   - Paste your SimpleFIN setup token or access URL
+   - Click `Claim token`
+   - Click `Sync now` or `Backfill history`
+8. Stop the app when needed:
+   - `./stop_app.sh`
 
 ## Startup (Shared Host / tmux)
 Use the included launcher for `http://harmony.local:5173/`:
@@ -77,18 +89,11 @@ location /budget/ {
 }
 ```
 
-## Verification Commands
-- `make lint`
-- `make test`
-- `make dev`
-
 ## Login
-- Go to `/login`.
-- First successful login creates the single local owner record.
-- Subsequent logins must use the same email/password.
-- Current local dev owner in this workspace:
-  - email: `owner@example.com`
-  - password: `test-password`
+- Go to `/budget/login`.
+- First run shows `First-Time Setup` and creates the single local owner account.
+- After setup, the same screen switches to standard sign-in for that owner account.
+- Use `Settings` to change the password later.
 
 ## Mock Mode (SimpleFIN)
 - Set `SIMPLEFIN_MOCK=1` in `.env`.
@@ -101,13 +106,23 @@ location /budget/ {
    - `SIMPLEFIN_MOCK=0`
 2. Restart app:
    - `./start_app.sh`
-3. Add token via script (reads `secrets.json`, key `simplefin_token`):
-   - `./scripts/setup_simplefin_from_secrets.sh`
-4. Or add manually in UI:
+3. In SimpleFIN Bridge, open your institution and copy the one-time setup token or returned access URL.
+4. Add it in the UI:
    - Open `/settings`
    - Paste setup token
    - Click `Claim token`
    - Click `Sync now`
+   - Use `Backfill history` for the initial import if you want the fullest available history
+
+Notes:
+- This app is local-only and single-user.
+- The SimpleFIN access URL is encrypted at rest.
+- Do not commit `.env`, `secrets.json`, database dumps, or backups.
+
+## Verification Commands
+- `make lint`
+- `make test`
+- `./start_app.sh`
 
 If you previously ran mock/manual data and want SimpleFIN-only accounts:
 - Run `make cleanup-accounts` to deactivate non-SimpleFIN and mock-fixture accounts.
