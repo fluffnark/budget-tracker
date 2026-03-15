@@ -168,7 +168,6 @@ export function AnalyticsPage() {
     useState<MortgageProjection | null>(null);
   const [mortgageActivity, setMortgageActivity] = useState<MortgageActivity | null>(null);
   const [sankeyMode, setSankeyMode] = useState('account_to_grouped_category');
-  const [sankeyCategory, setSankeyCategory] = useState('');
 
   const [utilityInflation, setUtilityInflation] = useState(4);
   const [generalInflation, setGeneralInflation] = useState(3);
@@ -183,6 +182,8 @@ export function AnalyticsPage() {
   const [mortgageOriginalPrincipal, setMortgageOriginalPrincipal] = useState(0);
   const [autoSyncMortgageFromAccount, setAutoSyncMortgageFromAccount] =
     useState(true);
+  const [sankeyCategoryIds, setSankeyCategoryIds] = useState<string[]>([]);
+  const [sankeyMaxCategoriesPerGroup, setSankeyMaxCategoriesPerGroup] = useState(6);
   const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
@@ -194,15 +195,23 @@ export function AnalyticsPage() {
   }, []);
 
   async function load() {
+    const focusedTransferCategory = sankeyCategoryIds.some((value) => {
+      const category = categories.find((entry) => String(entry.id) === value);
+      return category?.system_kind === 'transfer';
+    });
+    const effectiveIncludeTransfers = includeTransfers || focusedTransferCategory;
     const params = new URLSearchParams({
       start,
       end,
       include_pending: includePending ? '1' : '0',
-      include_transfers: includeTransfers ? '1' : '0',
-      mode: sankeyMode
+      include_transfers: effectiveIncludeTransfers ? '1' : '0',
+      mode: sankeyMode,
+      max_categories_per_group: String(sankeyMaxCategoriesPerGroup)
     });
-    if (sankeyCategory && sankeyMode !== 'income_hub_outcomes') {
-      params.set('category_id', sankeyCategory);
+    if (sankeyMode !== 'income_hub_outcomes') {
+      for (const categoryId of sankeyCategoryIds) {
+        if (categoryId) params.append('category_ids', categoryId);
+      }
     }
     const sankeyData = await apiFetch<SankeyData>(
       `/api/analytics/sankey?${params.toString()}`
@@ -213,7 +222,7 @@ export function AnalyticsPage() {
     const month = String(now.getMonth() + 1).padStart(2, '0');
     const year = now.getFullYear();
     const monthly = await apiFetch<MonthlyData>(
-      `/api/reports/monthly?year=${year}&month=${month}&include_pending=${includePending ? 1 : 0}&include_transfers=${includeTransfers ? 1 : 0}`
+      `/api/reports/monthly?year=${year}&month=${month}&include_pending=${includePending ? 1 : 0}&include_transfers=${effectiveIncludeTransfers ? 1 : 0}`
     );
     setPie(monthly.category_breakdown);
 
@@ -310,7 +319,9 @@ export function AnalyticsPage() {
     includePending,
     includeTransfers,
     sankeyMode,
-    sankeyCategory,
+    categories,
+    sankeyCategoryIds,
+    sankeyMaxCategoriesPerGroup,
     utilityInflation,
     generalInflation,
     savingsApr,
@@ -333,6 +344,35 @@ export function AnalyticsPage() {
     }
     return map;
   }, [categories]);
+
+  const categoryPathLabel = useMemo(() => {
+    const byId = new Map(categories.map((category) => [category.id, category]));
+    const cache = new Map<number, string>();
+    const buildPath = (categoryId: number): string => {
+      const cached = cache.get(categoryId);
+      if (cached) return cached;
+      const category = byId.get(categoryId);
+      if (!category) return 'Unknown';
+      const label =
+        category.parent_id && byId.has(category.parent_id)
+          ? `${buildPath(category.parent_id)} > ${category.name}`
+          : category.name;
+      cache.set(categoryId, label);
+      return label;
+    };
+    return new Map(
+      categories.map((category) => [
+        category.id,
+        `${category.icon ? `${category.icon} ` : ''}${buildPath(category.id)}`
+      ])
+    );
+  }, [categories]);
+
+  const focusedCategorySummary = useMemo(() => {
+    return sankeyCategoryIds
+      .map((value) => categoryPathLabel.get(Number(value)))
+      .filter((value): value is string => Boolean(value));
+  }, [categoryPathLabel, sankeyCategoryIds]);
 
   const accountBalanceRows = useMemo(() => {
     return accounts
@@ -525,19 +565,59 @@ export function AnalyticsPage() {
                 </select>
               </label>
               <label>
-                Category focus
+                Focused category paths
                 <select
-                  value={sankeyCategory}
-                  onChange={(e) => setSankeyCategory(e.target.value)}
+                  multiple
+                  value={sankeyCategoryIds}
+                  onChange={(e) =>
+                    setSankeyCategoryIds(
+                      Array.from(e.target.selectedOptions, (option) => option.value)
+                    )
+                  }
+                  size={Math.min(isMobile ? 6 : 8, Math.max(4, categories.length))}
                 >
-                  <option value="">All categories</option>
                   {categories.map((cat) => (
                     <option key={cat.id} value={cat.id}>
-                      {(cat.icon ? `${cat.icon} ` : '') + cat.name}
+                      {categoryPathLabel.get(cat.id) ?? cat.name}
                     </option>
                   ))}
                 </select>
+                <small>
+                  Select parent families or leaves. Parent selections include child
+                  categories.
+                </small>
               </label>
+              <label>
+                Detail depth per group
+                <input
+                  type="range"
+                  min={2}
+                  max={12}
+                  step={1}
+                  value={sankeyMaxCategoriesPerGroup}
+                  onChange={(e) =>
+                    setSankeyMaxCategoriesPerGroup(Number(e.target.value))
+                  }
+                />
+                <small>
+                  Show up to {sankeyMaxCategoriesPerGroup} final categories per middle
+                  group before collapsing the rest into `Other`.
+                </small>
+              </label>
+              {focusedCategorySummary.length > 0 && (
+                <>
+                  <p className="category-editor-note">
+                    Focused on: {focusedCategorySummary.join(', ')}
+                  </p>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => setSankeyCategoryIds([])}
+                  >
+                    Clear category focus
+                  </button>
+                </>
+              )}
             </div>
           )
         },
@@ -699,8 +779,9 @@ export function AnalyticsPage() {
                   nodes={sankeyRaw.nodes}
                   links={sankeyRaw.links}
                   height={height}
-                  width={1200}
+                  width={focusedCategorySummary.length > 0 ? 980 : 1200}
                   expanded={expanded}
+                  focused={focusedCategorySummary.length > 0}
                 />
               )}
             </ExpandableChart>

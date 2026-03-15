@@ -20,13 +20,15 @@ export function SankeyChart({
   links,
   width = 900,
   height = 380,
-  expanded = false
+  expanded = false,
+  focused = false
 }: {
   nodes: SankeyNode[];
   links: Link[];
   width?: number;
   height?: number;
   expanded?: boolean;
+  focused?: boolean;
 }) {
   const [hovered, setHovered] = useState<string>('');
   const [zoom, setZoom] = useState(1);
@@ -231,9 +233,21 @@ export function SankeyChart({
 
   useEffect(() => {
     if (!expanded) return;
-    setZoom(hasGroupedFlow ? 1.06 : 1.14);
-    setPan({ x: hasGroupedFlow ? -28 : -56, y: hasGroupedFlow ? -6 : -10 });
-  }, [expanded, hasGroupedFlow]);
+    const compactFocus = focused || nodes.length <= 18;
+    setZoom(
+      hasGroupedFlow
+        ? compactFocus
+          ? 1.34
+          : 1.06
+        : compactFocus
+          ? 1.28
+          : 1.14
+    );
+    setPan({
+      x: hasGroupedFlow ? (compactFocus ? -92 : -28) : compactFocus ? -72 : -56,
+      y: hasGroupedFlow ? (compactFocus ? -18 : -6) : compactFocus ? -14 : -10
+    });
+  }, [expanded, focused, hasGroupedFlow, nodes.length]);
 
   if (!graph) {
     return <p>No Sankey data for selected range.</p>;

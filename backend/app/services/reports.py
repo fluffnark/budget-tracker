@@ -275,7 +275,8 @@ def sankey_data(
     include_pending: bool,
     include_transfers: bool,
     mode: str = "account_to_category",
-    category_id: int | None = None,
+    category_ids: list[int] | None = None,
+    max_categories_per_group: int = 6,
 ) -> dict:
     start_dt = datetime.combine(start, datetime.min.time(), tzinfo=UTC)
     end_dt = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
@@ -295,8 +296,25 @@ def sankey_data(
                 or_(Category.system_kind.is_(None), Category.system_kind != "transfer"),
             )
         )
-    if category_id is not None:
-        q = q.where(Transaction.category_id == category_id)
+    selected_category_ids = [value for value in (category_ids or []) if value is not None]
+    if selected_category_ids:
+        categories = list(db.execute(select(Category).order_by(Category.id.asc())).scalars())
+        children: dict[int, list[int]] = defaultdict(list)
+        for category in categories:
+            if category.parent_id is not None:
+                children[category.parent_id].append(category.id)
+
+        expanded_ids = set(selected_category_ids)
+        queue = list(selected_category_ids)
+        while queue:
+            current = queue.pop()
+            for child_id in children.get(current, []):
+                if child_id in expanded_ids:
+                    continue
+                expanded_ids.add(child_id)
+                queue.append(child_id)
+
+        q = q.where(Transaction.category_id.in_(sorted(expanded_ids)))
     rows = db.execute(q).all()
     category_paths = _category_path_map(db)
     if mode in {"income_hub_outcomes", "account_to_grouped_category"}:
@@ -374,7 +392,7 @@ def sankey_data(
                 "category_id": category_ref,
             }
 
-        category_limit = 6
+        category_limit = max(1, max_categories_per_group)
         kept_categories: dict[str, set[str]] = defaultdict(set)
         overflow_totals: dict[str, float] = defaultdict(float)
         for group_name in {group for group, _category in group_to_category.keys()}:

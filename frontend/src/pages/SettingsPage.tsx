@@ -95,6 +95,9 @@ export function SettingsPage() {
   const [savingEmail, setSavingEmail] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [smtpPassword, setSmtpPassword] = useState('');
+  const [ownerEmail, setOwnerEmail] = useState('');
+  const [ownerCurrentPassword, setOwnerCurrentPassword] = useState('');
+  const [changingEmail, setChangingEmail] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
@@ -134,6 +137,7 @@ export function SettingsPage() {
     const auth = await apiFetch<AuthStatus>('/api/auth/status');
     setSettings(s);
     setAuthStatus(auth);
+    setOwnerEmail(auth.owner_email ?? '');
     setReportRecipients(s.email_report_recipients);
   }
 
@@ -206,6 +210,42 @@ export function SettingsPage() {
       setMessage(err instanceof Error ? err.message : 'Password change failed');
     } finally {
       setChangingPassword(false);
+    }
+  }
+
+  async function changeOwnerEmail() {
+    if (!ownerEmail.trim()) {
+      setMessage('Enter an owner email.');
+      return;
+    }
+    if (!ownerCurrentPassword) {
+      setMessage('Enter the current password to change the username.');
+      return;
+    }
+    setChangingEmail(true);
+    try {
+      const next = await apiFetch<{ email: string }>('/api/auth/change-email', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: ownerEmail,
+          current_password: ownerCurrentPassword
+        })
+      });
+      setOwnerCurrentPassword('');
+      setAuthStatus((prev) =>
+        prev
+          ? {
+              ...prev,
+              owner_email: next.email
+            }
+          : prev
+      );
+      setOwnerEmail(next.email);
+      setMessage('Owner username updated.');
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Username change failed');
+    } finally {
+      setChangingEmail(false);
     }
   }
 
@@ -445,6 +485,31 @@ export function SettingsPage() {
               <p className="category-editor-note">
                 This app is designed for one local owner account. Change the password here instead of creating additional users.
               </p>
+              <label>
+                Username / email
+                <input
+                  value={ownerEmail}
+                  onChange={(e) => setOwnerEmail(e.target.value)}
+                  autoComplete="username"
+                  placeholder="you@example.com"
+                />
+              </label>
+              <label>
+                Current password for username change
+                <input
+                  type="password"
+                  value={ownerCurrentPassword}
+                  onChange={(e) => setOwnerCurrentPassword(e.target.value)}
+                  autoComplete="current-password"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={changeOwnerEmail}
+                disabled={changingEmail}
+              >
+                {changingEmail ? 'Updating username...' : 'Change username'}
+              </button>
               <label>
                 Current password
                 <input

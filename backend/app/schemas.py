@@ -31,6 +31,11 @@ class PasswordChangeRequest(BaseModel):
     new_password: str
 
 
+class OwnerEmailChangeRequest(BaseModel):
+    current_password: str
+    email: str
+
+
 class ClaimSimplefinRequest(BaseModel):
     setup_token: str
 

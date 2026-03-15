@@ -59,6 +59,7 @@ from app.schemas import (
     ExportResponse,
     LoginRequest,
     LoginResponse,
+    OwnerEmailChangeRequest,
     PasswordChangeRequest,
     RuleCreateRequest,
     RuleCreateResponse,
@@ -260,6 +261,31 @@ def change_password(
     owner.password_hash = hash_password(_validate_new_password(payload.new_password))
     db.commit()
     return {"ok": True}
+
+
+@app.post("/api/auth/change-email", response_model=LoginResponse)
+def change_email(
+    payload: OwnerEmailChangeRequest,
+    owner: Owner = Depends(get_current_owner),
+    db: Session = Depends(get_db),
+) -> LoginResponse:
+    if not verify_password(payload.current_password, owner.password_hash):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+
+    email = payload.email.strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+
+    existing = db.execute(
+        select(Owner).where(Owner.email == email, Owner.id != owner.id)
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Email is already in use")
+
+    owner.email = email
+    db.commit()
+    db.refresh(owner)
+    return LoginResponse(email=owner.email)
 
 
 @app.get("/api/accounts", response_model=list[AccountResponse])
@@ -737,7 +763,8 @@ def get_sankey(
     include_pending: bool = True,
     include_transfers: bool = False,
     mode: str = Query(default="account_to_grouped_category"),
-    category_id: int | None = None,
+    category_ids: list[int] | None = Query(default=None),
+    max_categories_per_group: int = Query(default=6, ge=1, le=20),
     _: Owner = Depends(get_current_owner),
     db: Session = Depends(get_db),
 ) -> SankeyResponse:
@@ -757,7 +784,8 @@ def get_sankey(
             include_pending=include_pending,
             include_transfers=include_transfers,
             mode=mode,
-            category_id=category_id,
+            category_ids=category_ids,
+            max_categories_per_group=max_categories_per_group,
         )
     )
 
