@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Bar,
   BarChart,
@@ -14,7 +15,11 @@ import {
 } from 'recharts';
 
 import { apiFetch } from '../api';
+import { CategoryWaffleChart } from '../components/CategoryWaffleChart';
 import { ExpandableChart } from '../components/ExpandableChart';
+import type { Category } from '../types';
+import { buildCategoryPathMap } from '../utils/categories';
+import { buildTransactionsHref } from '../utils/transactionsLink';
 
 type WeeklyData = {
   totals: { inflow: number; outflow: number; net: number };
@@ -53,21 +58,49 @@ type YearlyData = {
 };
 
 export function ReportsPage() {
+  const navigate = useNavigate();
   const [tab, setTab] = useState<'weekly' | 'monthly' | 'yearly'>('weekly');
   const [weekly, setWeekly] = useState<WeeklyData | null>(null);
   const [monthly, setMonthly] = useState<MonthlyData | null>(null);
   const [yearly, setYearly] = useState<YearlyData | null>(null);
   const [includePending, setIncludePending] = useState(true);
+  const [categories, setCategories] = useState<Category[]>([]);
 
-  const today = new Date();
-  const month = String(today.getMonth() + 1).padStart(2, '0');
-  const year = today.getFullYear();
+  const currentDate = useMemo(() => new Date(), []);
+  const month = String(currentDate.getMonth() + 1).padStart(2, '0');
+  const year = currentDate.getFullYear();
+  const weeklyStartDate = useMemo(() => {
+    const value = new Date(currentDate);
+    value.setDate(value.getDate() - 6);
+    return value.toISOString().slice(0, 10);
+  }, [currentDate]);
+  const todayIso = currentDate.toISOString().slice(0, 10);
+  const monthStart = `${year}-${month}-01`;
+  const monthEnd = new Date(year, Number(month), 0).toISOString().slice(0, 10);
+  const categoryPathMap = useMemo(() => buildCategoryPathMap(categories), [categories]);
+  const categoryIdsByLabel = useMemo(() => {
+    const map = new Map<string, number>();
+    const leafCounts = new Map<string, number>();
+    for (const category of categories) {
+      leafCounts.set(category.name, (leafCounts.get(category.name) ?? 0) + 1);
+    }
+    for (const category of categories) {
+      const path = categoryPathMap.get(category.id);
+      if (path) map.set(path, category.id);
+      if ((leafCounts.get(category.name) ?? 0) === 1) {
+        map.set(category.name, category.id);
+      }
+    }
+    return map;
+  }, [categories, categoryPathMap]);
 
   useEffect(() => {
-    const weeklyStart = new Date(today);
-    weeklyStart.setDate(today.getDate() - 6);
-    const start = weeklyStart.toISOString().slice(0, 10);
-    const end = today.toISOString().slice(0, 10);
+    const start = weeklyStartDate;
+    const end = todayIso;
+
+    apiFetch<Category[]>('/api/categories')
+      .then(setCategories)
+      .catch(() => setCategories([]));
 
     apiFetch<WeeklyData>(
       `/api/reports/weekly?start=${start}&end=${end}&include_pending=${includePending ? 1 : 0}&include_transfers=0`
@@ -86,7 +119,7 @@ export function ReportsPage() {
     )
       .then(setYearly)
       .catch(() => setYearly(null));
-  }, [includePending]);
+  }, [includePending, month, todayIso, weeklyStartDate, year]);
 
   const categoryBarData = useMemo(
     () =>
@@ -95,7 +128,7 @@ export function ReportsPage() {
         .slice(0, 10),
     [monthly]
   );
-  const pieColor = (category: string, index: number) => {
+  const barColor = (category: string, index: number) => {
     const palette = [
       'var(--series-1)',
       'var(--series-2)',
@@ -112,6 +145,35 @@ export function ReportsPage() {
     const hue = hash % 360;
     return `hsl(${hue} 62% 52%)`;
   };
+
+  function openTransactionsForCategory(categoryLabel: string, start: string, end: string) {
+    const categoryId = categoryIdsByLabel.get(categoryLabel);
+    navigate(
+      buildTransactionsHref({
+        start,
+        end,
+        includePending,
+        includeTransfers: false,
+        categoryId: categoryId ?? null,
+        categoryFamily: categoryId
+          ? null
+          : categoryLabel.includes(' > ')
+            ? categoryLabel.split(' > ')[0]
+            : categoryLabel
+      })
+    );
+  }
+
+  function openTransactionsForDate(date: string) {
+    navigate(
+      buildTransactionsHref({
+        start: date,
+        end: date,
+        includePending,
+        includeTransfers: false
+      })
+    );
+  }
 
   return (
     <section>
@@ -184,11 +246,30 @@ export function ReportsPage() {
                       labelStyle={{ color: 'var(--fg)' }}
                       itemStyle={{ color: 'var(--fg)' }}
                     />
-                    <Bar dataKey="outflow" fill="var(--series-2)" radius={[8, 8, 0, 0]} />
+                    <Bar
+                      dataKey="outflow"
+                      fill="var(--series-2)"
+                      radius={[8, 8, 0, 0]}
+                      cursor="pointer"
+                      onClick={(data) => {
+                        if (data?.date) openTransactionsForDate(String(data.date));
+                      }}
+                    />
                   </BarChart>
                 </ResponsiveContainer>
               )}
             </ExpandableChart>
+          </article>
+          <article className="card">
+            <h3>Weekly Category Share</h3>
+            <CategoryWaffleChart
+              items={weekly.top_categories}
+              maxLegendItems={5}
+              caption="Each square represents about 1% of this week’s spending, excluding transfers."
+              onLegendClick={(category) =>
+                openTransactionsForCategory(category, weeklyStartDate, todayIso)
+              }
+            />
           </article>
         </div>
       )}
@@ -230,6 +311,16 @@ export function ReportsPage() {
                     <Bar
                       dataKey="amount"
                       radius={[8, 8, 8, 8]}
+                      cursor="pointer"
+                      onClick={(data) => {
+                        if (data?.category) {
+                          openTransactionsForCategory(
+                            String(data.category),
+                            monthStart,
+                            monthEnd
+                          );
+                        }
+                      }}
                     >
                       <LabelList
                         dataKey="amount"
@@ -239,7 +330,7 @@ export function ReportsPage() {
                       {categoryBarData.map((entry, idx) => (
                         <Cell
                           key={`${entry.category}-${idx}`}
-                          fill={pieColor(entry.category, idx)}
+                          fill={barColor(entry.category, idx)}
                         />
                       ))}
                     </Bar>
@@ -301,6 +392,16 @@ export function ReportsPage() {
                 </li>
               ))}
             </ul>
+          </article>
+          <article className="card">
+            <h3>Category Share</h3>
+            <CategoryWaffleChart
+              items={monthly.category_breakdown}
+              caption="Each square represents about 1% of monthly spending, excluding transfers."
+              onLegendClick={(category) =>
+                openTransactionsForCategory(category, monthStart, monthEnd)
+              }
+            />
           </article>
         </div>
       )}

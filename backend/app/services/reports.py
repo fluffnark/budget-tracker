@@ -3,11 +3,12 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from math import ceil
+import re
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Account, BalanceSnapshot, Category, Transaction
+from app.models import Account, BalanceSnapshot, Category, Merchant, Transaction
 
 
 def _category_path_map(db: Session) -> dict[int, str]:
@@ -265,6 +266,248 @@ def yearly_report(
     ]
 
     return {"year": year, "monthly_totals": monthly_totals, "category_trends": category_trends}
+
+
+def _month_floor(value: date) -> date:
+    return date(value.year, value.month, 1)
+
+
+def _add_months(value: date, months: int) -> date:
+    month_index = (value.year * 12 + (value.month - 1)) + months
+    year = month_index // 12
+    month = month_index % 12 + 1
+    return date(year, month, 1)
+
+
+def _merchant_label(txn: Transaction, merchant: Merchant | None) -> str:
+    if merchant and merchant.name_canonical.strip():
+        return merchant.name_canonical.strip()
+    fallback = txn.description_norm.strip() or txn.description_raw.strip() or "Unknown merchant"
+    return fallback[:48]
+
+
+_MERCHANT_ALIAS_PATTERNS: list[tuple[str, str]] = [
+    (r"\bAIRBNB\b", "Airbnb"),
+    (r"\bUBER\s+EATS\b", "Uber Eats"),
+    (r"\bUBER\b", "Uber"),
+    (r"\bLYFT\b", "Lyft"),
+    (r"\bDOORDASH\b|\bDASHER?MART\b", "DoorDash"),
+    (r"\bGRUBHUB\b", "Grubhub"),
+    (r"\bINSTACART\b", "Instacart"),
+    (r"\bAMAZON\b|\bAMZN\b", "Amazon"),
+    (r"\bWHOLE\s+FOODS\b", "Whole Foods"),
+    (r"\bTRADER\s+JOE\S*\b", "Trader Joe's"),
+    (r"\bSAFEWAY\b", "Safeway"),
+    (r"\bCOSTCO\b", "Costco"),
+    (r"\bWALMART\b", "Walmart"),
+    (r"\bTARGET\b", "Target"),
+    (r"\bHOME\s+DEPOT\b", "Home Depot"),
+    (r"\bLOWE\S*\b", "Lowe's"),
+    (r"\bSHELL\b", "Shell"),
+    (r"\bCHEVRON\b", "Chevron"),
+    (r"\bEXXON\b|\bMOBIL\b", "Exxon / Mobil"),
+    (r"\bSTARBUCKS\b", "Starbucks"),
+    (r"\bNETFLIX\b", "Netflix"),
+    (r"\bSPOTIFY\b", "Spotify"),
+    (r"\bAPPLE\b", "Apple"),
+    (r"\bGOOGLE\b|\bYOUTUBE\b", "Google"),
+    (r"\bPAYPAL\b", "PayPal"),
+    (r"\bVENMO\b", "Venmo"),
+]
+
+_MERCHANT_NOISE_TOKENS = {
+    "ACH",
+    "AUTOPAY",
+    "CARD",
+    "CHECKCARD",
+    "DBT",
+    "DEBIT",
+    "ONLINE",
+    "PAYMENT",
+    "POS",
+    "PURCHASE",
+    "RECURRING",
+    "SQ",
+    "TST",
+    "WITHDRAWAL",
+    "WWW",
+}
+
+
+def _normalize_merchant_group(raw_label: str) -> str:
+    label = raw_label.upper()
+    label = re.sub(r"[^A-Z0-9]+", " ", label)
+    label = re.sub(r"\s+", " ", label).strip()
+    for pattern, replacement in _MERCHANT_ALIAS_PATTERNS:
+        if re.search(pattern, label):
+            return replacement
+
+    tokens = [
+        token
+        for token in label.split()
+        if token not in _MERCHANT_NOISE_TOKENS and not token.isdigit() and len(token) > 1
+    ]
+    if not tokens:
+        return raw_label.strip().title() or "Unknown merchant"
+    trimmed = []
+    for token in tokens:
+        if any(ch.isalpha() for ch in token):
+            trimmed.append(token)
+        if len(trimmed) == 3:
+            break
+    if not trimmed:
+        trimmed = tokens[:2]
+    return " ".join(trimmed).title()
+
+
+def merchant_history_data(
+    db: Session,
+    *,
+    start: date,
+    end: date,
+    include_pending: bool,
+    include_transfers: bool,
+    bucket: str = "month",
+    top_n: int = 8,
+) -> dict:
+    if bucket not in {"week", "month"}:
+        raise ValueError("Unsupported merchant history bucket")
+
+    start_dt = datetime.combine(start, datetime.min.time(), tzinfo=UTC)
+    end_dt = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+
+    q = (
+        select(Transaction, Merchant, Category)
+        .outerjoin(Merchant, Merchant.id == Transaction.merchant_id)
+        .outerjoin(Category, Category.id == Transaction.category_id)
+        .where(Transaction.posted_at >= start_dt)
+        .where(Transaction.posted_at < end_dt)
+    )
+    if not include_pending:
+        q = q.where(Transaction.is_pending.is_(False))
+    if not include_transfers:
+        q = q.where(
+            and_(
+                Transaction.transfer_id.is_(None),
+                or_(Category.system_kind.is_(None), Category.system_kind != "transfer"),
+            )
+        )
+
+    rows = db.execute(q).all()
+    category_paths = _category_path_map(db)
+    if bucket == "month":
+        bucket_start = _month_floor(start)
+        bucket_end = _add_months(_month_floor(end), 1)
+        bucket_keys: list[date] = []
+        cursor = bucket_start
+        while cursor < bucket_end:
+            bucket_keys.append(cursor)
+            cursor = _add_months(cursor, 1)
+    else:
+        bucket_start = start - timedelta(days=start.weekday())
+        bucket_end = end + timedelta(days=(6 - end.weekday()))
+        bucket_keys = []
+        cursor = bucket_start
+        while cursor <= bucket_end:
+            bucket_keys.append(cursor)
+            cursor += timedelta(days=7)
+
+    merchant_totals: dict[str, float] = defaultdict(float)
+    bucket_totals: dict[date, float] = defaultdict(float)
+    merchant_bucket_totals: dict[str, dict[date, float]] = defaultdict(lambda: defaultdict(float))
+    family_totals: dict[str, float] = defaultdict(float)
+    family_merchant_totals: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+
+    for txn, merchant, category in rows:
+        amount = float(txn.amount)
+        if amount >= 0:
+            continue
+        merchant_name = _normalize_merchant_group(_merchant_label(txn, merchant))
+        txn_day = txn.posted_at.astimezone(UTC).date()
+        bucket_key = _month_floor(txn_day) if bucket == "month" else txn_day - timedelta(days=txn_day.weekday())
+        spend = abs(amount)
+        merchant_totals[merchant_name] += spend
+        bucket_totals[bucket_key] += spend
+        merchant_bucket_totals[merchant_name][bucket_key] += spend
+        category_path = (
+            category_paths.get(category.id, category.name)
+            if category is not None
+            else "Uncategorized/Needs Review"
+        )
+        family = category_path.split(" > ")[0].strip()
+        family_totals[family] += spend
+        family_merchant_totals[family][merchant_name] += spend
+
+    ranked_merchants = sorted(
+        merchant_totals.items(), key=lambda item: item[1], reverse=True
+    )[: max(1, top_n)]
+    top_names = [merchant_name for merchant_name, _total in ranked_merchants]
+
+    bucket_rows = []
+    for bucket_key in bucket_keys:
+        if bucket == "month":
+            label = bucket_key.strftime("%b %Y")
+        else:
+            label = bucket_key.strftime("%b %-d")
+        merchant_values = {
+            merchant_name: round(merchant_bucket_totals[merchant_name].get(bucket_key, 0.0), 2)
+            for merchant_name in top_names
+        }
+        bucket_rows.append(
+            {
+                "bucket_start": bucket_key.isoformat(),
+                "bucket_label": label,
+                "total": round(bucket_totals.get(bucket_key, 0.0), 2),
+                "merchants": merchant_values,
+            }
+        )
+
+    top_rows = []
+    bucket_count = max(len(bucket_keys), 1)
+    latest_key = bucket_keys[-1] if bucket_keys else None
+    for merchant_name, total in ranked_merchants:
+        series = [
+            round(merchant_bucket_totals[merchant_name].get(bucket_key, 0.0), 2)
+            for bucket_key in bucket_keys
+        ]
+        active_buckets = sum(1 for value in series if value > 0)
+        top_rows.append(
+            {
+                "merchant": merchant_name,
+                "total": round(total, 2),
+                "average_per_bucket": round(total / bucket_count, 2),
+                "latest_bucket": round(
+                    merchant_bucket_totals[merchant_name].get(latest_key, 0.0) if latest_key else 0.0,
+                    2,
+                ),
+                "active_buckets": active_buckets,
+                "sparkline": series,
+            }
+        )
+
+    return {
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "bucket": bucket,
+        "top_merchants": top_rows,
+        "buckets": bucket_rows,
+        "top_by_family": [
+            {
+                "family": family,
+                "merchant": leader_name,
+                "total": round(leader_total, 2),
+                "family_total": round(total, 2),
+                "share_of_family": round((leader_total / total) * 100, 1) if total > 0 else 0.0,
+            }
+            for family, total in sorted(family_totals.items(), key=lambda item: item[1], reverse=True)[:8]
+            for leader_name, leader_total in [
+                max(
+                    family_merchant_totals[family].items(),
+                    key=lambda item: item[1],
+                )
+            ]
+        ],
+    }
 
 
 def sankey_data(

@@ -42,7 +42,9 @@ function defaultFilters(): FilterState {
     start: range.start,
     end: range.end,
     account_ids: [],
+    account_id: '',
     category_id: null,
+    category_family: '',
     uncategorized_only: false,
     include_pending: true,
     include_transfers: false
@@ -55,7 +57,9 @@ function parseFilters(searchParams: URLSearchParams): FilterState | null {
     'start',
     'end',
     'accounts',
+    'account_id',
     'category_id',
+    'category_family',
     'uncategorized',
     'pending',
     'transfers'
@@ -74,7 +78,9 @@ function parseFilters(searchParams: URLSearchParams): FilterState | null {
       .split(',')
       .map((id) => id.trim())
       .filter(Boolean),
+    account_id: searchParams.get('account_id') ?? '',
     category_id: categoryRaw ? Number(categoryRaw) : null,
+    category_family: searchParams.get('category_family') ?? '',
     uncategorized_only: searchParams.get('uncategorized') === '1',
     include_pending: searchParams.get('pending') !== '0',
     include_transfers: searchParams.get('transfers') === '1'
@@ -88,12 +94,80 @@ function serializeFilters(filters: FilterState): URLSearchParams {
   params.set('end', filters.end);
   if (filters.account_ids.length)
     params.set('accounts', filters.account_ids.join(','));
+  if (filters.account_id) params.set('account_id', filters.account_id);
   if (filters.category_id)
     params.set('category_id', String(filters.category_id));
+  if (filters.category_family)
+    params.set('category_family', filters.category_family);
   if (filters.uncategorized_only) params.set('uncategorized', '1');
   if (!filters.include_pending) params.set('pending', '0');
   if (filters.include_transfers) params.set('transfers', '1');
   return params;
+}
+
+type ParsedLLMAssignment = {
+  transaction_id?: string;
+  transaction_ref?: string;
+  id?: string;
+  category_id: number;
+  reason?: string;
+};
+
+type ParsedLLMRule = {
+  match_type: string;
+  pattern: string;
+  category_id: number;
+  priority?: number;
+  reason?: string;
+};
+
+const ALLOWED_RULE_MATCH_TYPES = new Set([
+  'contains',
+  'regex',
+  'merchant',
+  'account'
+]);
+
+function computeShortTransactionIds(transactionIds: string[]): Map<string, string> {
+  const uniqueIds = Array.from(new Set(transactionIds));
+  const shortIds = new Map<string, string>();
+
+  for (let prefixLength = 10; prefixLength <= 36; prefixLength += 1) {
+    const seen = new Map<string, string>();
+    let collided = false;
+    for (const transactionId of uniqueIds) {
+      const prefix = transactionId.slice(0, prefixLength);
+      const existing = seen.get(prefix);
+      if (existing && existing !== transactionId) {
+        collided = true;
+        break;
+      }
+      seen.set(prefix, transactionId);
+    }
+    if (!collided) {
+      for (const transactionId of uniqueIds) {
+        shortIds.set(transactionId, transactionId.slice(0, prefixLength));
+      }
+      return shortIds;
+    }
+  }
+
+  for (const transactionId of uniqueIds) {
+    shortIds.set(transactionId, transactionId);
+  }
+  return shortIds;
+}
+
+function resolveParsedAssignments(assignments: ParsedLLMAssignment[]) {
+  return assignments.map((row) => ({
+    transaction_id:
+      row.transaction_id?.trim() ||
+      row.transaction_ref?.trim() ||
+      row.id?.trim() ||
+      '',
+    category_id: row.category_id,
+    reason: row.reason
+  }));
 }
 
 export function CategorizePage() {
@@ -121,13 +195,16 @@ export function CategorizePage() {
   const [applyTargetCount, setApplyTargetCount] = useState(0);
   const [llmImportJson, setLlmImportJson] = useState('');
   const [importingLlm, setImportingLlm] = useState(false);
-  const [creatingRulesFromLlm, setCreatingRulesFromLlm] = useState(false);
+  const [creatingRulesFromLlm, setCreatingRulesFromLlm] = useState(true);
   const [exportingLlmPayload, setExportingLlmPayload] = useState(false);
   const [llmPreflight, setLlmPreflight] = useState<{
     assignmentCount: number;
     ruleCount: number;
     unknownTransactionIds: string[];
+    ambiguousTransactionIds: string[];
     invalidCategoryIds: number[];
+    invalidRuleMatchTypes: string[];
+    blankRuleIndexes: number[];
     duplicateTransactionIds: string[];
     transferAssignmentCount: number;
     transferAssignmentRatio: number;
@@ -268,11 +345,23 @@ export function CategorizePage() {
   const visibleTransactions = useMemo(() => {
     const excludedAccounts = new Set(filters.account_ids);
     return transactions.filter((txn) => {
+      if (filters.account_id && txn.account_id !== filters.account_id) return false;
       if (excludedAccounts.has(txn.account_id)) return false;
       if (
         filters.uncategorized_only &&
         txn.category_id !== null &&
         !uncategorizedCategoryIds.has(txn.category_id)
+      ) {
+        return false;
+      }
+      const path =
+        txn.category_id !== null
+          ? (pathMap.get(txn.category_id) ?? txn.category_name ?? '')
+          : txn.category_name ?? '';
+      if (
+        filters.category_family &&
+        !path.startsWith(`${filters.category_family} >`) &&
+        path !== filters.category_family
       ) {
         return false;
       }
@@ -283,8 +372,11 @@ export function CategorizePage() {
   }, [
     transactions,
     filters.account_ids,
+    filters.account_id,
     filters.uncategorized_only,
     filters.category_id,
+    filters.category_family,
+    pathMap,
     uncategorizedCategoryIds
   ]);
 
@@ -312,7 +404,11 @@ export function CategorizePage() {
 
   useEffect(() => {
     setTablePage(1);
-  }, [tableRowsPerPage, filters.start, filters.end, filters.include_pending, filters.include_transfers, filters.category_id, filters.account_ids, filters.uncategorized_only]);
+  }, [tableRowsPerPage, filters.start, filters.end, filters.include_pending, filters.include_transfers, filters.category_id, filters.account_ids, filters.account_id, filters.uncategorized_only]);
+  
+  useEffect(() => {
+    setTablePage(1);
+  }, [filters.category_family]);
 
   useEffect(() => {
     setReviewPage(1);
@@ -404,10 +500,6 @@ export function CategorizePage() {
   const transactionsById = useMemo(
     () => new Map(transactions.map((txn) => [txn.id, txn])),
     [transactions]
-  );
-  const validCategoryIds = useMemo(
-    () => new Set(categories.map((category) => category.id)),
-    [categories]
   );
 
   async function runAutoCategorize() {
@@ -512,18 +604,8 @@ export function CategorizePage() {
   }
 
   function parseLLMJson(text: string): {
-    proposed_assignments?: Array<{
-      transaction_id: string;
-      category_id: number;
-      reason?: string;
-    }>;
-    proposed_rules?: Array<{
-      match_type: string;
-      pattern: string;
-      category_id: number;
-      priority?: number;
-      reason?: string;
-    }>;
+    proposed_assignments?: ParsedLLMAssignment[];
+    proposed_rules?: ParsedLLMRule[];
   } {
     const trimmed = text.trim();
     if (!trimmed) return {};
@@ -604,31 +686,28 @@ export function CategorizePage() {
     );
   }
 
-  function buildLLMPreflight(parsed: {
-    proposed_assignments?: Array<{
-      transaction_id: string;
-      id?: string;
-      category_id: number;
-      reason?: string;
-    }>;
-    proposed_rules?: Array<{
-      match_type: string;
-      pattern: string;
-      category_id: number;
-      priority?: number;
-      reason?: string;
-    }>;
+  async function buildLLMPreflight(parsed: {
+    proposed_assignments?: ParsedLLMAssignment[];
+    proposed_rules?: ParsedLLMRule[];
   }) {
-    const assignments = (parsed.proposed_assignments ?? []).map((row) => ({
-      transaction_id: row.transaction_id ?? row.id ?? '',
-      category_id: row.category_id,
-      reason: row.reason
-    }));
+    const assignments = resolveParsedAssignments(parsed.proposed_assignments ?? []);
     const proposedRules = parsed.proposed_rules ?? [];
+    const invalidRuleMatchTypes = Array.from(
+      new Set(
+        proposedRules
+          .map((rule) => (rule.match_type ?? '').trim())
+          .filter((matchType) => !ALLOWED_RULE_MATCH_TYPES.has(matchType))
+      )
+    );
+    const blankRuleIndexes = proposedRules
+      .map((rule, index) => ({
+        index,
+        pattern: (rule.pattern ?? '').trim()
+      }))
+      .filter((row) => !row.pattern)
+      .map((row) => row.index);
     const seen = new Set<string>();
     const duplicateTransactionIds: string[] = [];
-    const unknownTransactionIds: string[] = [];
-    const invalidCategoryIdsSet = new Set<number>();
     let transferAssignmentCount = 0;
 
     for (const row of assignments) {
@@ -637,16 +716,25 @@ export function CategorizePage() {
       } else {
         seen.add(row.transaction_id);
       }
-      if (!transactionsById.has(row.transaction_id)) {
-        unknownTransactionIds.push(row.transaction_id);
-      }
-      if (!validCategoryIds.has(row.category_id)) {
-        invalidCategoryIdsSet.add(row.category_id);
-      }
       if (row.category_id === 47 || row.category_id === 46) {
         transferAssignmentCount += 1;
       }
     }
+
+    const validation = await apiFetch<{
+      unknown_transaction_ids: string[];
+      ambiguous_transaction_ids: string[];
+      invalid_category_ids: number[];
+    }>('/api/categorization/validate_llm', {
+      method: 'POST',
+      body: JSON.stringify({
+        transaction_ids: assignments.map((row) => row.transaction_id),
+        category_ids: [
+          ...assignments.map((row) => row.category_id),
+          ...proposedRules.map((rule) => rule.category_id)
+        ]
+      })
+    });
 
     const transferAssignmentRatio =
       assignments.length > 0 ? transferAssignmentCount / assignments.length : 0;
@@ -654,13 +742,228 @@ export function CategorizePage() {
     return {
       assignmentCount: assignments.length,
       ruleCount: proposedRules.length,
-      unknownTransactionIds: unknownTransactionIds.slice(0, 20),
-      invalidCategoryIds: Array.from(invalidCategoryIdsSet),
+      unknownTransactionIds: validation.unknown_transaction_ids.slice(0, 20),
+      ambiguousTransactionIds: validation.ambiguous_transaction_ids.slice(0, 20),
+      invalidCategoryIds: validation.invalid_category_ids,
+      invalidRuleMatchTypes,
+      blankRuleIndexes: blankRuleIndexes.slice(0, 20),
       duplicateTransactionIds: duplicateTransactionIds.slice(0, 20),
       transferAssignmentCount,
       transferAssignmentRatio
     };
   }
+
+  function buildCompactCategorizationPromptPack(payload: {
+    transactions?: Array<{
+      id: string;
+      date: string;
+      amount: number;
+      currency: string;
+      description_norm: string;
+      merchant_canonical: string | null;
+      account_type: string;
+      category_id: number | null;
+      category_path?: string;
+      is_pending: boolean;
+      is_transfer: boolean;
+    }>;
+    categories?: Array<{
+      id: number;
+      name?: string;
+      full_path: string;
+      system_kind: string;
+      parent_id: number | null;
+    }>;
+  }) {
+    const categoriesCompact = (payload.categories ?? []).map((category) => ({
+      id: category.id,
+      path: category.full_path,
+      kind: category.system_kind
+    }));
+
+    const uncategorizedIds = new Set(
+      categoriesCompact
+        .filter((category) => category.kind === 'uncategorized')
+        .map((category) => category.id)
+    );
+
+    const txns = payload.transactions ?? [];
+    const shortTransactionIds = computeShortTransactionIds(
+      txns.map((txn) => txn.id)
+    );
+    const reviewTransactions = txns
+      .filter(
+        (txn) =>
+          txn.category_id === null ||
+          (txn.category_id !== null && uncategorizedIds.has(txn.category_id))
+      )
+      .map((txn) => ({
+        transaction_id: shortTransactionIds.get(txn.id) ?? txn.id,
+        date: txn.date,
+        amount: txn.amount,
+        description: txn.description_norm,
+        merchant: txn.merchant_canonical,
+        account_type: txn.account_type,
+        pending: txn.is_pending,
+        transfer_hint: txn.is_transfer
+      }));
+
+    const merchantRefs = new Map<
+      string,
+      {
+        merchant: string;
+        category_id: number;
+        category_path: string;
+        count: number;
+        sample: string;
+      }
+    >();
+    const patternRefs = new Map<
+      string,
+      {
+        pattern: string;
+        category_id: number;
+        category_path: string;
+        count: number;
+      }
+    >();
+
+    for (const txn of txns) {
+      if (
+        txn.category_id === null ||
+        uncategorizedIds.has(txn.category_id) ||
+        txn.is_transfer
+      ) {
+        continue;
+      }
+
+      const categoryPath = txn.category_path ?? 'Unknown';
+      const normalized = txn.description_norm.trim();
+      const merchantKey = txn.merchant_canonical?.trim().toLowerCase();
+      if (merchantKey) {
+        const existing = merchantRefs.get(merchantKey);
+        if (!existing) {
+          merchantRefs.set(merchantKey, {
+            merchant: txn.merchant_canonical ?? merchantKey,
+            category_id: txn.category_id,
+            category_path: categoryPath,
+            count: 1,
+            sample: normalized
+          });
+        } else if (existing.category_id === txn.category_id) {
+          existing.count += 1;
+        }
+      }
+
+      const tokens = normalized.split(/\s+/).filter(Boolean).slice(0, 3);
+      if (tokens.length >= 2) {
+        const pattern = tokens.join(' ');
+        const patternKey = `${pattern.toLowerCase()}::${txn.category_id}`;
+        const existing = patternRefs.get(patternKey);
+        if (!existing) {
+          patternRefs.set(patternKey, {
+            pattern,
+            category_id: txn.category_id,
+            category_path: categoryPath,
+            count: 1
+          });
+        } else {
+          existing.count += 1;
+        }
+      }
+    }
+
+    const merchantReference = [...merchantRefs.values()]
+      .filter((row) => row.count >= 2)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 80)
+      .map((row) => ({
+        merchant: row.merchant,
+        category_id: row.category_id,
+        category_path: row.category_path,
+        seen: row.count,
+        sample: row.sample
+      }));
+
+    const patternReference = [...patternRefs.values()]
+      .filter((row) => row.count >= 2)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 60);
+
+    const compactPayload = {
+      review_transactions: reviewTransactions,
+      categories: categoriesCompact,
+      merchant_reference: merchantReference,
+      pattern_reference: patternReference,
+      response_schema: {
+        proposed_assignments: [
+          { transaction_id: 'string', category_id: 0, reason: 'short' }
+        ],
+        proposed_rules: [
+          {
+            match_type: 'contains|regex|merchant|account',
+            pattern: 'string',
+            category_id: 0,
+            priority: 800,
+            reason: 'short'
+          }
+        ]
+      }
+    };
+
+    const prompt = [
+      'Return exactly one JSON object with keys `proposed_assignments` and `proposed_rules`.',
+      'No prose, no markdown, no code fences.',
+      'Categorize only `review_transactions` using only category IDs from `categories`.',
+      'Use each provided `transaction_id` exactly as shown, even when abbreviated.',
+      'Prefer `merchant_reference` first, then `pattern_reference`, then the transaction text itself.',
+      'Skip uncertain transactions instead of guessing.',
+      'Use transfer categories 46/47 only for true transfers, card payments, or account moves.',
+      'At most one assignment per transaction_id.',
+      'Create rules only for repeated, specific merchant/pattern signals; avoid broad words like PAYMENT, TRANSFER, PURCHASE.',
+      'Keep reasons very short.',
+      'Output shape: {"proposed_assignments":[{"transaction_id":"...","category_id":123,"reason":"..."}],"proposed_rules":[{"match_type":"contains|regex|merchant|account","pattern":"...","category_id":123,"priority":800,"reason":"..."}]}.'
+    ].join('\n');
+
+    return { prompt, compactPayload };
+  }
+
+  const llmPayloadEstimate = useMemo(() => {
+    const categoryEntries = categories.map((category) => ({
+      id: category.id,
+      name: category.name,
+      full_path: pathMap.get(category.id) ?? category.name,
+      system_kind: category.system_kind,
+      parent_id: category.parent_id
+    }));
+    const transactionEntries = transactions.map((txn) => ({
+      id: txn.id,
+      date: txn.posted_at.slice(0, 10),
+      amount: txn.amount,
+      currency: txn.currency,
+      description_norm: txn.description_norm,
+      merchant_canonical: txn.merchant_name,
+      account_type: txn.account_type,
+      category_id: txn.category_id,
+      category_path: txn.category_id
+        ? (pathMap.get(txn.category_id) ?? txn.category_name ?? undefined)
+        : undefined,
+      is_pending: txn.is_pending,
+      is_transfer: Boolean(txn.transfer_id)
+    }));
+    const { prompt, compactPayload } = buildCompactCategorizationPromptPack({
+      transactions: transactionEntries,
+      categories: categoryEntries
+    });
+    const text = `${prompt}\n\n${JSON.stringify(compactPayload)}`;
+    return {
+      reviewCount: compactPayload.review_transactions.length,
+      merchantRefCount: compactPayload.merchant_reference.length,
+      patternRefCount: compactPayload.pattern_reference.length,
+      chars: text.length,
+      approxTokens: Math.ceil(text.length / 4)
+    };
+  }, [categories, pathMap, transactions]);
 
   async function exportLLMPayload() {
     setExportingLlmPayload(true);
@@ -703,68 +1006,13 @@ export function CategorizePage() {
           } & Record<string, unknown>
         >;
       };
-      const uncategorizedCategoryIds = new Set(
-        (payload.categories ?? [])
-          .filter((category) => category.system_kind === 'uncategorized')
-          .map((category) => category.id)
-      );
-      const compactTransactions = (payload.transactions ?? []).map((txn) => ({
-        transaction_id: txn.id,
-        date: txn.date,
-        amount: txn.amount,
-        currency: txn.currency,
-        description_norm: txn.description_norm,
-        merchant_canonical: txn.merchant_canonical,
-        account_type: txn.account_type,
-        is_pending: txn.is_pending,
-        is_transfer: txn.is_transfer,
-        category_id: txn.category_id,
-        category_path: txn.category_path ?? null,
-        needs_category_review:
-          txn.category_id === null ||
-          (txn.category_id !== null && uncategorizedCategoryIds.has(txn.category_id))
-      }));
-      const compactCategories = (payload.categories ?? []).map((category) => ({
-        id: category.id,
-        name: (category as { name?: string }).name ?? null,
-        full_path: category.full_path,
-        system_kind: category.system_kind,
-        parent_id: category.parent_id
-      }));
+      const { prompt, compactPayload } = buildCompactCategorizationPromptPack(payload);
 
-      const uncategorizedOnly = {
-        transactions: compactTransactions,
-        categories: compactCategories,
-        uncategorized_transaction_count: compactTransactions.filter(
-          (txn) => txn.needs_category_review
-        ).length,
-        transaction_count: compactTransactions.length,
-        uncategorized_category_ids: Array.from(uncategorizedCategoryIds),
-        llm_response_schema: {
-          proposed_assignments: [
-            {
-              transaction_id: 'string',
-              category_id: 0,
-              reason: 'short'
-            }
-          ],
-          proposed_rules: [
-            {
-              match_type: 'contains|regex|merchant|account',
-              pattern: 'string',
-              category_id: 0,
-              priority: 100,
-              reason: 'short'
-            }
-          ]
-        }
-      };
-
-      const text = `${exportResponse.prompt_template}
+      const text = `${prompt}
 
 ## Input Data (JSON)
 \`\`\`json
-${JSON.stringify(uncategorizedOnly, null, 2)}
+${JSON.stringify(compactPayload, null, 2)}
 \`\`\`
 `;
       if (navigator.clipboard?.writeText) {
@@ -796,7 +1044,7 @@ ${JSON.stringify(uncategorizedOnly, null, 2)}
     setError('');
     try {
       const parsed = parseLLMJson(llmImportJson || '{}');
-      const preflight = buildLLMPreflight(parsed);
+      const preflight = await buildLLMPreflight(parsed);
       setLlmPreflight(preflight);
 
       if (preflight.assignmentCount === 0) {
@@ -808,6 +1056,21 @@ ${JSON.stringify(uncategorizedOnly, null, 2)}
       if (preflight.invalidCategoryIds.length > 0) {
         throw new Error(
           `Invalid category IDs: ${preflight.invalidCategoryIds.join(', ')}`
+        );
+      }
+      if (preflight.invalidRuleMatchTypes.length > 0) {
+        throw new Error(
+          `Invalid rule match types: ${preflight.invalidRuleMatchTypes.join(', ')}`
+        );
+      }
+      if (preflight.blankRuleIndexes.length > 0) {
+        throw new Error(
+          `Rules with blank patterns at indexes: ${preflight.blankRuleIndexes.join(', ')}`
+        );
+      }
+      if (preflight.ambiguousTransactionIds.length > 0) {
+        throw new Error(
+          `Ambiguous transaction IDs: ${preflight.ambiguousTransactionIds.join(', ')}`
         );
       }
       if (preflight.duplicateTransactionIds.length > 0) {
@@ -837,9 +1100,10 @@ ${JSON.stringify(uncategorizedOnly, null, 2)}
         {
           method: 'POST',
           body: JSON.stringify({
-            proposed_assignments: (parsed.proposed_assignments ?? []).map((row) => ({
-              transaction_id:
-                row.transaction_id ?? (row as { id?: string }).id ?? '',
+            proposed_assignments: resolveParsedAssignments(
+              parsed.proposed_assignments ?? []
+            ).map((row) => ({
+              transaction_id: row.transaction_id,
               category_id: row.category_id,
               reason: row.reason
             })),
@@ -908,6 +1172,44 @@ ${JSON.stringify(uncategorizedOnly, null, 2)}
                 </button>
               }
             />
+            {filters.category_family && (
+              <div className="toast">
+                Chart filter: {filters.category_family}
+                <div className="row-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() =>
+                      setFilters((current) => ({
+                        ...current,
+                        category_family: ''
+                      }))
+                    }
+                  >
+                    Clear family filter
+                  </button>
+                </div>
+              </div>
+            )}
+            {filters.account_id && (
+              <div className="toast">
+                Chart filter: account {accounts.find((account) => account.id === filters.account_id)?.name ?? filters.account_id}
+                <div className="row-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() =>
+                      setFilters((current) => ({
+                        ...current,
+                        account_id: ''
+                      }))
+                    }
+                  >
+                    Clear account filter
+                  </button>
+                </div>
+              </div>
+            )}
           </>
         }
         sections={[
@@ -1051,9 +1353,31 @@ ${JSON.stringify(uncategorizedOnly, null, 2)}
       {showReview && (
         <div className="modal-overlay">
           <div className="modal auto-categorize-modal">
-            <h3>Review Auto-categorize Suggestions</h3>
-            <p className="category-editor-note">Press Esc to close this review.</p>
-            <div className="filters">
+            <div className="review-modal-head">
+              <div>
+                <h3>Review Auto-categorize Suggestions</h3>
+                <p className="category-editor-note">Press Esc to close this review.</p>
+              </div>
+              <div className="review-summary-strip">
+                <div className="review-summary-card">
+                  <strong>{suggestions.length}</strong>
+                  <span>Suggestions</span>
+                </div>
+                <div className="review-summary-card">
+                  <strong>
+                    {
+                      suggestions.filter((item) => item.confidence >= minConfidence).length
+                    }
+                  </strong>
+                  <span>Above threshold</span>
+                </div>
+                <div className="review-summary-card">
+                  <strong>{selectedIds.size}</strong>
+                  <span>Selected</span>
+                </div>
+              </div>
+            </div>
+            <div className="review-action-bar">
               <label>
                 Min confidence
                 <input
@@ -1111,17 +1435,24 @@ ${JSON.stringify(uncategorizedOnly, null, 2)}
                   : `Apply selected (${selectedIds.size})`}
               </button>
             </div>
-            <div className="filters">
-              <button
-                type="button"
-                className={`secondary ${exportingLlmPayload ? 'button-loading' : ''}`}
-                onClick={exportLLMPayload}
-                disabled={exportingLlmPayload || importingLlm}
-              >
-                {exportingLlmPayload
-                  ? 'Exporting payload...'
-                  : 'Copy LLM payload (uncategorized)'}
-              </button>
+            <div className="review-llm-tools">
+              <div>
+                <button
+                  type="button"
+                  className={`secondary ${exportingLlmPayload ? 'button-loading' : ''}`}
+                  onClick={exportLLMPayload}
+                  disabled={exportingLlmPayload || importingLlm}
+                >
+                  {exportingLlmPayload
+                    ? 'Exporting payload...'
+                    : 'Copy compact LLM payload'}
+                </button>
+                <p className="category-editor-note">
+                  Approx size: {llmPayloadEstimate.approxTokens.toLocaleString()} tokens /{' '}
+                  {llmPayloadEstimate.chars.toLocaleString()} chars.
+                  {` ${llmPayloadEstimate.reviewCount} review rows, ${llmPayloadEstimate.merchantRefCount} merchant refs, ${llmPayloadEstimate.patternRefCount} pattern refs.`}
+                </p>
+              </div>
               <label className="inline">
                 <input
                   type="checkbox"
@@ -1137,17 +1468,18 @@ ${JSON.stringify(uncategorizedOnly, null, 2)}
                 rows={8}
                 value={llmImportJson}
                 onChange={(e) => setLlmImportJson(e.target.value)}
-                placeholder='{"proposed_assignments":[{"transaction_id":"...","category_id":123}]}'
+                placeholder='{"proposed_assignments":[{"transaction_id":"1d58258383","category_id":123}]}'
               />
             </label>
             <div className="row-actions">
               <button
                 type="button"
                 className="secondary"
-                onClick={() => {
+                onClick={async () => {
                   try {
                     const parsed = parseLLMJson(llmImportJson || '{}');
-                    setLlmPreflight(buildLLMPreflight(parsed));
+                    const preflight = await buildLLMPreflight(parsed);
+                    setLlmPreflight(preflight);
                     setMessage('LLM response validated.');
                     setError('');
                   } catch (e) {
@@ -1182,7 +1514,16 @@ ${JSON.stringify(uncategorizedOnly, null, 2)}
                   Unknown transaction IDs: {llmPreflight.unknownTransactionIds.length}
                 </p>
                 <p className="category-editor-note">
+                  Ambiguous transaction IDs: {llmPreflight.ambiguousTransactionIds.length}
+                </p>
+                <p className="category-editor-note">
                   Invalid category IDs: {llmPreflight.invalidCategoryIds.length}
+                </p>
+                <p className="category-editor-note">
+                  Invalid rule match types: {llmPreflight.invalidRuleMatchTypes.length}
+                </p>
+                <p className="category-editor-note">
+                  Blank rule patterns: {llmPreflight.blankRuleIndexes.length}
                 </p>
                 <p className="category-editor-note">
                   Duplicate transaction IDs: {llmPreflight.duplicateTransactionIds.length}

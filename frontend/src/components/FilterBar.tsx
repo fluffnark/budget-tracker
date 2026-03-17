@@ -7,6 +7,7 @@ export type PeriodPreset =
   | 'this_month'
   | 'last_month'
   | 'last_3_months'
+  | 'one_year'
   | 'ytd'
   | 'custom';
 
@@ -15,7 +16,9 @@ export type FilterState = {
   start: string;
   end: string;
   account_ids: string[];
+  account_id?: string;
   category_id: number | null;
+  category_family?: string;
   uncategorized_only: boolean;
   include_pending: boolean;
   include_transfers: boolean;
@@ -57,6 +60,11 @@ export function computeRangeForPreset(preset: PeriodPreset): {
   }
   if (preset === 'last_3_months') {
     const start = new Date(today.getFullYear(), today.getMonth() - 2, 1);
+    return { start: iso(start), end: iso(today) };
+  }
+  if (preset === 'one_year') {
+    const start = new Date(today);
+    start.setFullYear(today.getFullYear() - 1);
     return { start: iso(start), end: iso(today) };
   }
   const start = new Date(today.getFullYear(), 0, 1);
@@ -101,7 +109,7 @@ export function FilterBar({
   }
 
   function selectAccountSet(nextIds: string[]) {
-    update({ account_ids: nextIds });
+    update({ account_ids: nextIds, account_id: '' });
   }
 
   return (
@@ -117,6 +125,7 @@ export function FilterBar({
             <option value="this_month">This month</option>
             <option value="last_month">Last month</option>
             <option value="last_3_months">Last 3 months</option>
+            <option value="one_year">1 year</option>
             <option value="ytd">YTD</option>
             <option value="custom">Custom</option>
           </select>
@@ -151,7 +160,11 @@ export function FilterBar({
             categories={categories}
             value={value.category_id}
             onChange={(category_id) =>
-              update({ category_id, uncategorized_only: false })
+              update({
+                category_id,
+                category_family: '',
+                uncategorized_only: false
+              })
             }
             noneLabel="All categories"
             showSearch
@@ -166,7 +179,8 @@ export function FilterBar({
           onClick={() =>
             update({
               uncategorized_only: !value.uncategorized_only,
-              category_id: null
+              category_id: null,
+              category_family: ''
             })
           }
         >

@@ -16,6 +16,19 @@ import {
   type TxnFilterInput
 } from '../utils/transactionFilters';
 
+type DateHorizon = 'all' | 'one_year' | 'custom';
+
+function toIsoDate(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
+function oneYearRange(): { start: string; end: string } {
+  const end = new Date();
+  const start = new Date(end);
+  start.setFullYear(end.getFullYear() - 1);
+  return { start: toIsoDate(start), end: toIsoDate(end) };
+}
+
 const initialFilters: TxnFilterInput = {
   q: '',
   accountId: '',
@@ -29,9 +42,20 @@ export function TransactionsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [filters, setFilters] = useState<TxnFilterInput>(initialFilters);
-  const [start, setStart] = useState('');
-  const [end, setEnd] = useState('');
+  const [filters, setFilters] = useState<TxnFilterInput>({
+    ...initialFilters,
+    q: searchParams.get('q') ?? '',
+    accountId: searchParams.get('account_id') ?? '',
+    categoryId: searchParams.get('category_id') ?? ''
+  });
+  const [start, setStart] = useState(searchParams.get('start') ?? '');
+  const [end, setEnd] = useState(searchParams.get('end') ?? '');
+  const [horizon, setHorizon] = useState<DateHorizon>(() => {
+    const preset = searchParams.get('preset');
+    if (preset === 'one_year') return 'one_year';
+    if (searchParams.get('start') || searchParams.get('end')) return 'custom';
+    return 'all';
+  });
   const [ruleToast, setRuleToast] = useState<{
     applied: number;
     ids: string[];
@@ -49,6 +73,9 @@ export function TransactionsPage() {
     });
     if (start) params.set('start', start);
     if (end) params.set('end', end);
+    if (filters.q.trim()) params.set('q', filters.q.trim());
+    if (filters.accountId) params.set('account_id', filters.accountId);
+    if (filters.categoryId) params.set('category_id', filters.categoryId);
     const rows = await apiFetch<Transaction[]>(
       `/api/transactions?${params.toString()}`
     );
@@ -72,6 +99,30 @@ export function TransactionsPage() {
         .filter(Boolean)
     );
     setAffectedIds(parsed);
+  }, [searchParams]);
+
+  useEffect(() => {
+    const nextStart = searchParams.get('start') ?? '';
+    const nextEnd = searchParams.get('end') ?? '';
+    const preset = searchParams.get('preset');
+    const nextQ = searchParams.get('q') ?? '';
+    const nextAccountId = searchParams.get('account_id') ?? '';
+    const nextCategoryId = searchParams.get('category_id') ?? '';
+    setStart(nextStart);
+    setEnd(nextEnd);
+    setFilters((current) => ({
+      ...current,
+      q: nextQ,
+      accountId: nextAccountId,
+      categoryId: nextCategoryId
+    }));
+    setHorizon(
+      preset === 'one_year'
+        ? 'one_year'
+        : nextStart || nextEnd
+          ? 'custom'
+          : 'all'
+    );
   }, [searchParams]);
 
   const accounts = useMemo(() => {
@@ -139,14 +190,42 @@ export function TransactionsPage() {
     await loadTransactions();
   }
 
+  function applyHorizon(nextHorizon: DateHorizon) {
+    setHorizon(nextHorizon);
+    if (nextHorizon === 'all') {
+      setStart('');
+      setEnd('');
+      return;
+    }
+    if (nextHorizon === 'one_year') {
+      const range = oneYearRange();
+      setStart(range.start);
+      setEnd(range.end);
+    }
+  }
+
   const filtersContent = (
     <div className="filters">
+      <label>
+        Horizon
+        <select
+          value={horizon}
+          onChange={(e) => applyHorizon(e.target.value as DateHorizon)}
+        >
+          <option value="all">All</option>
+          <option value="one_year">1 year</option>
+          <option value="custom">Custom</option>
+        </select>
+      </label>
       <label>
         Start
         <input
           type="date"
           value={start}
-          onChange={(e) => setStart(e.target.value)}
+          onChange={(e) => {
+            setHorizon('custom');
+            setStart(e.target.value);
+          }}
         />
       </label>
       <label>
@@ -154,7 +233,10 @@ export function TransactionsPage() {
         <input
           type="date"
           value={end}
-          onChange={(e) => setEnd(e.target.value)}
+          onChange={(e) => {
+            setHorizon('custom');
+            setEnd(e.target.value);
+          }}
         />
       </label>
       <label>

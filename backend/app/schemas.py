@@ -155,6 +155,17 @@ class CategorizationImportLLMResponse(BaseModel):
     rules_applied_count: int = 0
 
 
+class CategorizationValidateLLMRequest(BaseModel):
+    transaction_ids: list[str]
+    category_ids: list[int]
+
+
+class CategorizationValidateLLMResponse(BaseModel):
+    unknown_transaction_ids: list[str]
+    ambiguous_transaction_ids: list[str]
+    invalid_category_ids: list[int]
+
+
 class TransactionPatchRequest(BaseModel):
     category_id: int | None = None
     merchant_id: int | None = None
@@ -224,6 +235,39 @@ class YearlyReportResponse(BaseModel):
 class SankeyResponse(BaseModel):
     nodes: list[dict[str, Any]]
     links: list[dict[str, Any]]
+
+
+class MerchantHistoryBucket(BaseModel):
+    bucket_start: str
+    bucket_label: str
+    total: float
+    merchants: dict[str, float]
+
+
+class MerchantHistoryMerchant(BaseModel):
+    merchant: str
+    total: float
+    average_per_bucket: float
+    latest_bucket: float
+    active_buckets: int
+    sparkline: list[float]
+
+
+class MerchantHistoryFamilyLeader(BaseModel):
+    family: str
+    merchant: str
+    total: float
+    family_total: float
+    share_of_family: float
+
+
+class MerchantHistoryResponse(BaseModel):
+    start: str
+    end: str
+    bucket: str
+    top_merchants: list[MerchantHistoryMerchant]
+    buckets: list[MerchantHistoryBucket]
+    top_by_family: list[MerchantHistoryFamilyLeader]
 
 
 class CategoryResponse(BaseModel):
@@ -477,8 +521,9 @@ class RecurringPaymentCandidate(BaseModel):
     estimated_monthly_cost: float
     last_amount: float
     last_posted_at: date
-    next_expected_at: date
+    next_expected_at: date | None = None
     is_cancel_candidate: bool
+    review_reason: str | None = None
 
 
 class BudgetRecurringResponse(BaseModel):
@@ -487,3 +532,4 @@ class BudgetRecurringResponse(BaseModel):
     estimated_monthly_cancelable: float
     cancel_candidates: list[RecurringPaymentCandidate]
     essential_candidates: list[RecurringPaymentCandidate]
+    review_candidates: list[RecurringPaymentCandidate]

@@ -395,6 +395,20 @@ button.secondary:hover {
   background: var(--secondary-hover);
 }
 
+.link-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--link);
+  font: inherit;
+  text-align: left;
+}
+
+.link-button:hover {
+  color: var(--link-hover);
+  background: transparent;
+}
+
 .category-tree-dropdown {
   position: relative;
   min-width: 240px;
@@ -757,6 +771,130 @@ body.sankey-interaction-lock .content {
   gap: 6px;
 }
 
+.waffle-card {
+  display: grid;
+  gap: 16px;
+}
+
+.waffle-card.compact {
+  gap: 8px;
+}
+
+.waffle-grid {
+  display: grid;
+  grid-template-columns: repeat(14, minmax(0, 1fr));
+  gap: 3px;
+  width: 100%;
+}
+
+.waffle-card.compact .waffle-grid {
+  grid-template-columns: repeat(14, minmax(0, 1fr));
+  gap: 3px;
+}
+
+.waffle-cell {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  cursor: pointer;
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease,
+    border-color 120ms ease;
+}
+
+.waffle-card.compact .waffle-cell {
+  border-radius: 3px;
+}
+
+.waffle-cell:hover {
+  transform: scale(1.06);
+  border-color: color-mix(in srgb, #0f172a 16%, transparent);
+}
+
+.waffle-cell.is-highlighted {
+  transform: scale(1.08);
+  border-color: color-mix(in srgb, #0f172a 18%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, white 55%, transparent);
+}
+
+.waffle-cell.is-dimmed {
+  opacity: 0.4;
+  filter: saturate(0.82);
+}
+
+.waffle-meta {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.waffle-legend {
+  display: grid;
+  gap: 10px;
+}
+
+.waffle-card.compact .waffle-legend {
+  gap: 5px;
+}
+
+.waffle-legend-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.95rem;
+}
+
+.waffle-card.compact .waffle-legend-row {
+  font-size: 0.8rem;
+}
+
+.waffle-legend-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.waffle-legend-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  transition: color 120ms ease, opacity 120ms ease;
+}
+
+.waffle-legend-button.is-clickable {
+  cursor: pointer;
+}
+
+.waffle-legend-button.is-clickable:hover {
+  color: var(--primary);
+}
+
+.waffle-legend-button.is-highlighted {
+  color: var(--primary);
+}
+
+.waffle-legend-button.is-dimmed {
+  opacity: 0.56;
+}
+
+.waffle-card.compact .budget-caption {
+  margin-top: 2px;
+  font-size: 0.8rem;
+}
+
 .swatch {
   width: 10px;
   height: 10px;
@@ -786,6 +924,14 @@ body.sankey-interaction-lock .content {
 
 .swatch.series-3 {
   background: var(--series-3);
+}
+
+@media (max-width: 700px) {
+  .waffle-legend-row {
+    align-items: start;
+    flex-direction: column;
+    gap: 4px;
+  }
 }
 
 .swatch.series-4 {
@@ -1267,6 +1413,60 @@ button.danger:hover {
   max-height: min(92vh, 1080px);
 }
 
+.review-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.review-summary-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.review-summary-card {
+  min-width: 110px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--card-bg) 88%, var(--hover-bg));
+  display: grid;
+  gap: 4px;
+}
+
+.review-summary-card strong {
+  font-size: 1.1rem;
+}
+
+.review-summary-card span {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.review-action-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.review-llm-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 18px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--card-bg) 92%, var(--hover-bg));
+}
+
 .auto-categorize-modal .table th,
 .auto-categorize-modal .table td {
   overflow-wrap: anywhere;
@@ -1589,5 +1789,10 @@ button.danger:hover {
   .mobile-dock button.active {
     background: var(--primary);
     color: var(--primary-fg);
+  }
+
+  .review-modal-head,
+  .review-llm-tools {
+    display: grid;
   }
 }

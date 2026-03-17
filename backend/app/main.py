@@ -52,6 +52,8 @@ from app.schemas import (
     CategorizationApplyResponse,
     CategorizationImportLLMRequest,
     CategorizationImportLLMResponse,
+    CategorizationValidateLLMRequest,
+    CategorizationValidateLLMResponse,
     CategorizationSuggestRequest,
     CategorizationSuggestResponse,
     CategoryCreateRequest,
@@ -62,6 +64,7 @@ from app.schemas import (
     ExportResponse,
     LoginRequest,
     LoginResponse,
+    MerchantHistoryResponse,
     OwnerEmailChangeRequest,
     PasswordChangeRequest,
     RuleCreateRequest,
@@ -102,6 +105,7 @@ from app.services.email_reports import send_monthly_email_report, set_smtp_passw
 from app.services.ingest import SyncError, run_sync
 from app.services.reports import (
     balance_trends_data,
+    merchant_history_data,
     mortgage_activity_data,
     mortgage_projection_data,
     monthly_report,
@@ -116,6 +120,64 @@ from app.services.sync_progress import complete, fail, snapshot, start, update
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
+
+
+def _resolve_transaction_ids(
+    db: Session, transaction_ids: list[str]
+) -> tuple[dict[str, str], list[str], list[str]]:
+    cleaned = sorted({value.strip() for value in transaction_ids if value.strip()})
+    if not cleaned:
+        return {}, [], []
+
+    existing_exact = set(
+        db.execute(select(Transaction.id).where(Transaction.id.in_(cleaned))).scalars()
+    )
+    resolved = {transaction_id: transaction_id for transaction_id in existing_exact}
+    unknown: list[str] = []
+    ambiguous: list[str] = []
+
+    for transaction_id in cleaned:
+        if transaction_id in resolved:
+            continue
+        matches = list(
+            db.execute(
+                select(Transaction.id)
+                .where(Transaction.id.startswith(transaction_id))
+                .limit(2)
+            ).scalars()
+        )
+        if len(matches) == 1:
+            resolved[transaction_id] = matches[0]
+        elif len(matches) > 1:
+            ambiguous.append(transaction_id)
+        else:
+            unknown.append(transaction_id)
+
+    return resolved, unknown, ambiguous
+
+
+ALLOWED_RULE_MATCH_TYPES = {"contains", "regex", "merchant", "account"}
+
+
+def _validate_llm_rules(
+    proposed_rules: list,
+) -> tuple[list[str], list[int]]:
+    invalid_match_types = sorted(
+        {
+            str(item.match_type)
+            for item in proposed_rules
+            if str(item.match_type) not in ALLOWED_RULE_MATCH_TYPES
+        }
+    )
+    invalid_rule_indexes = sorted(
+        {
+            index
+            for index, item in enumerate(proposed_rules)
+            if not (item.pattern or "").strip()
+        }
+    )
+    return invalid_match_types, invalid_rule_indexes
+
 
 app = FastAPI(title="Budget Tracker API")
 app.add_middleware(SecretScrubMiddleware)
@@ -826,6 +888,33 @@ def get_balance_trends(
     )
 
 
+@app.get("/api/analytics/merchant_history", response_model=MerchantHistoryResponse)
+def get_merchant_history(
+    start: date,
+    end: date,
+    include_pending: bool = True,
+    include_transfers: bool = False,
+    bucket: str = Query(default="month"),
+    top_n: int = Query(default=8, ge=3, le=16),
+    _: Owner = Depends(get_current_owner),
+    db: Session = Depends(get_db),
+) -> MerchantHistoryResponse:
+    try:
+        return MerchantHistoryResponse.model_validate(
+            merchant_history_data(
+                db,
+                start=start,
+                end=end,
+                include_pending=include_pending,
+                include_transfers=include_transfers,
+                bucket=bucket,
+                top_n=top_n,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/analytics/mortgage_projection")
 def get_mortgage_projection(
     principal_balance: float,
@@ -936,11 +1025,64 @@ def import_categorization_from_llm(
     if not settings.auto_categorization:
         raise HTTPException(status_code=404, detail="Auto-categorization is disabled")
 
+    resolved_transaction_ids, _unknown_transaction_ids, ambiguous_transaction_ids = (
+        _resolve_transaction_ids(
+            db, [item.transaction_id for item in payload.proposed_assignments]
+        )
+    )
+    if ambiguous_transaction_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Ambiguous transaction IDs: "
+                + ", ".join(ambiguous_transaction_ids[:20])
+            ),
+        )
+
+    invalid_rule_match_types, invalid_rule_indexes = _validate_llm_rules(
+        payload.proposed_rules
+    )
+    if invalid_rule_match_types:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid rule match types: "
+                + ", ".join(invalid_rule_match_types[:20])
+            ),
+        )
+    if invalid_rule_indexes:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Rules with blank patterns at indexes: "
+                + ", ".join(str(index) for index in invalid_rule_indexes[:20])
+            ),
+        )
+
+    rule_category_ids = {item.category_id for item in payload.proposed_rules}
+    if rule_category_ids:
+        existing_rule_category_ids = set(
+            db.execute(
+                select(Category.id).where(Category.id.in_(rule_category_ids))
+            ).scalars()
+        )
+        invalid_rule_category_ids = sorted(rule_category_ids - existing_rule_category_ids)
+        if invalid_rule_category_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Invalid rule category IDs: "
+                    + ", ".join(str(category_id) for category_id in invalid_rule_category_ids[:20])
+                ),
+            )
+
     applied_count, skipped_count, skipped_reasons = apply_suggestions(
         db,
         suggestions=[
             {
-                "transaction_id": item.transaction_id,
+                "transaction_id": resolved_transaction_ids.get(
+                    item.transaction_id, item.transaction_id
+                ),
                 "suggested_category_id": item.category_id,
                 "confidence": 1.0,
             }
@@ -977,6 +1119,32 @@ def import_categorization_from_llm(
         skipped_reasons=skipped_reasons,
         rules_created=rules_created,
         rules_applied_count=rules_applied_count,
+    )
+
+
+@app.post("/api/categorization/validate_llm", response_model=CategorizationValidateLLMResponse)
+def validate_categorization_from_llm(
+    payload: CategorizationValidateLLMRequest,
+    _: Owner = Depends(get_current_owner),
+    db: Session = Depends(get_db),
+) -> CategorizationValidateLLMResponse:
+    transaction_ids = sorted({value.strip() for value in payload.transaction_ids if value.strip()})
+    category_ids = sorted(set(payload.category_ids))
+    _resolved_transaction_ids, unknown_transaction_ids, ambiguous_transaction_ids = (
+        _resolve_transaction_ids(db, transaction_ids)
+    )
+    existing_category_ids = set()
+    if category_ids:
+        existing_category_ids = set(
+            db.execute(select(Category.id).where(Category.id.in_(category_ids))).scalars()
+        )
+
+    return CategorizationValidateLLMResponse(
+        unknown_transaction_ids=unknown_transaction_ids,
+        ambiguous_transaction_ids=ambiguous_transaction_ids,
+        invalid_category_ids=[
+            category_id for category_id in category_ids if category_id not in existing_category_ids
+        ],
     )
 
 

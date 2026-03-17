@@ -193,8 +193,9 @@ export type RecurringPaymentCandidate = {
   estimated_monthly_cost: number;
   last_amount: number;
   last_posted_at: string;
-  next_expected_at: string;
+  next_expected_at: string | null;
   is_cancel_candidate: boolean;
+  review_reason: string | null;
 };
 
 export type BudgetRecurringSnapshot = {
@@ -203,6 +204,7 @@ export type BudgetRecurringSnapshot = {
   estimated_monthly_cancelable: number;
   cancel_candidates: RecurringPaymentCandidate[];
   essential_candidates: RecurringPaymentCandidate[];
+  review_candidates: RecurringPaymentCandidate[];
 };
 
 export type LLMCategorizationImportResponse = {

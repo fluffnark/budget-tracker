@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Bar,
   BarChart,
@@ -20,6 +21,8 @@ import { SankeyChart } from '../components/SankeyChart';
 import { SectionLayout } from '../components/SectionLayout';
 import type { Account, Category } from '../types';
 import { isLiabilityAccount } from '../utils/accounts';
+import { buildCategoryPathMap } from '../utils/categories';
+import { buildTransactionsHref } from '../utils/transactionsLink';
 
 type SankeyData = {
   nodes: {
@@ -60,6 +63,33 @@ type BalanceTrends = {
     assets: number;
     liabilities: number;
     net_worth: number;
+  }[];
+};
+
+type MerchantHistory = {
+  start: string;
+  end: string;
+  bucket: 'week' | 'month';
+  top_merchants: {
+    merchant: string;
+    total: number;
+    average_per_bucket: number;
+    latest_bucket: number;
+    active_buckets: number;
+    sparkline: number[];
+  }[];
+  buckets: {
+    bucket_start: string;
+    bucket_label: string;
+    total: number;
+    merchants: Record<string, number>;
+  }[];
+  top_by_family: {
+    family: string;
+    merchant: string;
+    total: number;
+    family_total: number;
+    share_of_family: number;
   }[];
 };
 
@@ -133,7 +163,21 @@ function SignedCurrencyLabel({ x = 0, y = 0, width = 0, height = 0, value = 0 }:
   );
 }
 
+function merchantSeriesColor(index: number): string {
+  const palette = ['#5b8ff9', '#f6a35b', '#5ad8a6', '#e8684a', '#6dc8ec', '#9270ca'];
+  return palette[index % palette.length];
+}
+
+function shiftMonthsForWindow(isoDate: string, months: number, alignToMonthStart: boolean): string {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  const value = new Date(Date.UTC(year, month - 1, day));
+  value.setUTCMonth(value.getUTCMonth() - months + 1);
+  if (alignToMonthStart) value.setUTCDate(1);
+  return value.toISOString().slice(0, 10);
+}
+
 export function AnalyticsPage() {
+  const navigate = useNavigate();
   const tooltipStyle = useMemo(
     () => ({
       contentStyle: {
@@ -164,6 +208,7 @@ export function AnalyticsPage() {
   const [pie, setPie] = useState<{ category: string; amount: number }[]>([]);
   const [projection, setProjection] = useState<Projection | null>(null);
   const [balanceTrends, setBalanceTrends] = useState<BalanceTrends | null>(null);
+  const [merchantHistory, setMerchantHistory] = useState<MerchantHistory | null>(null);
   const [mortgageProjection, setMortgageProjection] =
     useState<MortgageProjection | null>(null);
   const [mortgageActivity, setMortgageActivity] = useState<MortgageActivity | null>(null);
@@ -186,6 +231,9 @@ export function AnalyticsPage() {
   const [sankeyPickerValue, setSankeyPickerValue] = useState('');
   const [sankeySearch, setSankeySearch] = useState('');
   const [sankeyMaxCategoriesPerGroup, setSankeyMaxCategoriesPerGroup] = useState(6);
+  const [merchantWindowMonths, setMerchantWindowMonths] = useState(12);
+  const [merchantBucket, setMerchantBucket] = useState<'week' | 'month'>('month');
+  const [merchantTopN, setMerchantTopN] = useState(8);
   const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
@@ -237,6 +285,24 @@ export function AnalyticsPage() {
       `/api/analytics/balance_trends?start=${start}&end=${end}`
     );
     setBalanceTrends(trends);
+
+    const merchantStart = shiftMonthsForWindow(
+      end,
+      merchantWindowMonths,
+      merchantBucket === 'month'
+    );
+    const merchantParams = new URLSearchParams({
+      start: merchantStart,
+      end,
+      include_pending: includePending ? '1' : '0',
+      include_transfers: effectiveIncludeTransfers ? '1' : '0',
+      bucket: merchantBucket,
+      top_n: String(merchantTopN)
+    });
+    const merchantData = await apiFetch<MerchantHistory>(
+      `/api/analytics/merchant_history?${merchantParams.toString()}`
+    );
+    setMerchantHistory(merchantData);
 
     if (mortgageAccountId) {
       const activity = await apiFetch<MortgageActivity>(
@@ -314,12 +380,16 @@ export function AnalyticsPage() {
       setSankeyRaw({ nodes: [], links: [] });
       setPie([]);
       setProjection(null);
+      setMerchantHistory(null);
     });
   }, [
     start,
     end,
     includePending,
     includeTransfers,
+    merchantBucket,
+    merchantTopN,
+    merchantWindowMonths,
     sankeyMode,
     categories,
     sankeyCategoryIds,
@@ -369,6 +439,22 @@ export function AnalyticsPage() {
       ])
     );
   }, [categories]);
+  const categoryPathMap = useMemo(() => buildCategoryPathMap(categories), [categories]);
+  const categoryIdsByLabel = useMemo(() => {
+    const leafCounts = new Map<string, number>();
+    for (const category of categories) {
+      leafCounts.set(category.name, (leafCounts.get(category.name) ?? 0) + 1);
+    }
+    const map = new Map<string, number>();
+    for (const category of categories) {
+      const plainPath = categoryPathMap.get(category.id);
+      if (plainPath) map.set(plainPath, category.id);
+      if ((leafCounts.get(category.name) ?? 0) === 1) {
+        map.set(category.name, category.id);
+      }
+    }
+    return map;
+  }, [categories, categoryPathMap]);
 
   const focusedCategorySummary = useMemo(() => {
     return sankeyCategoryIds
@@ -426,6 +512,7 @@ export function AnalyticsPage() {
         const isLiability = isLiabilityAccount(account);
         const signedBalance = isLiability ? -Math.abs(rawBalance) : rawBalance;
         return {
+          account_id: account.id,
           account: account.name,
           type: account.type,
           source_type: account.source_type,
@@ -456,6 +543,7 @@ export function AnalyticsPage() {
       accountBalanceRows
         .filter((row) => row.isLiability)
         .map((row) => ({
+          account_id: row.account_id,
           account: row.account,
           debt: Math.abs(row.balance)
         }))
@@ -464,6 +552,31 @@ export function AnalyticsPage() {
   );
 
   const balanceTrendRows = useMemo(() => balanceTrends?.points ?? [], [balanceTrends]);
+  const merchantLeaderboardRows = useMemo(
+    () => merchantHistory?.top_merchants ?? [],
+    [merchantHistory]
+  );
+  const merchantTrendSeries = useMemo(
+    () =>
+      merchantLeaderboardRows
+        .slice(0, Math.min(6, merchantLeaderboardRows.length))
+        .map((row) => row.merchant),
+    [merchantLeaderboardRows]
+  );
+  const merchantTrendRows = useMemo(
+    () =>
+      (merchantHistory?.buckets ?? []).map((bucket) => {
+        const row: Record<string, string | number> = {
+          bucket_label: bucket.bucket_label,
+          total: bucket.total
+        };
+        for (const merchant of merchantTrendSeries) {
+          row[merchant] = bucket.merchants[merchant] ?? 0;
+        }
+        return row;
+      }),
+    [merchantHistory, merchantTrendSeries]
+  );
 
   const topTrendAccounts = useMemo(() => {
     const rows = balanceTrends?.accounts ?? [];
@@ -529,6 +642,53 @@ export function AnalyticsPage() {
       paymentRows.reduce((sum, row) => sum + row.payment_amount, 0) / paymentRows.length
     );
   }, [monthlyPaymentRows]);
+
+  function openTransactionsForCategory(categoryLabel: string) {
+    const categoryId = categoryIdsByLabel.get(categoryLabel);
+    navigate(
+      buildTransactionsHref({
+        start,
+        end,
+        includePending,
+        includeTransfers,
+        categoryId: categoryId ?? null,
+        categoryFamily: categoryId
+          ? null
+          : categoryLabel.includes(' > ')
+            ? categoryLabel.split(' > ')[0]
+            : categoryLabel
+      })
+    );
+  }
+
+  function openTransactionsForAccount(accountId: string, includeTransferRows = true) {
+    navigate(
+      buildTransactionsHref({
+        start,
+        end,
+        includePending,
+        includeTransfers: includeTransferRows || includeTransfers,
+        accountId
+      })
+    );
+  }
+
+  function openTransactionsForMerchant(merchant: string) {
+    const merchantStart = shiftMonthsForWindow(
+      end,
+      merchantWindowMonths,
+      merchantBucket === 'month'
+    );
+    navigate(
+      buildTransactionsHref({
+        start: merchantStart,
+        end,
+        includePending,
+        includeTransfers,
+        q: merchant
+      })
+    );
+  }
 
   const mortgageRequiredFields = useMemo(() => {
     const missing: string[] = [];
@@ -729,7 +889,14 @@ export function AnalyticsPage() {
                   tick={{ fill: 'var(--fg)', fontSize: 12 }}
                 />
                 <Tooltip {...tooltipStyle} cursor={false} />
-                <Bar dataKey="amount" name="Spend">
+                <Bar
+                  dataKey="amount"
+                  name="Spend"
+                  cursor="pointer"
+                  onClick={(data) => {
+                    if (data?.category) openTransactionsForCategory(String(data.category));
+                  }}
+                >
                   <LabelList dataKey="amount" content={<SignedCurrencyLabel />} />
                   {[...pie].sort((a, b) => b.amount - a.amount).slice(0, 10).map((entry) => (
                     <Cell
@@ -741,6 +908,194 @@ export function AnalyticsPage() {
               </BarChart>
             </ResponsiveContainer>
             </div>
+          )
+        },
+        {
+          id: 'analytics-merchant-history',
+          label: 'Merchant History',
+          content: merchantHistory ? (
+            <>
+              <div className="filters">
+                <label>
+                  Window
+                  <select
+                    value={merchantWindowMonths}
+                    onChange={(e) => setMerchantWindowMonths(Number(e.target.value))}
+                  >
+                    <option value={3}>3 months</option>
+                    <option value={6}>6 months</option>
+                    <option value={12}>12 months</option>
+                    <option value={24}>24 months</option>
+                  </select>
+                </label>
+                <label>
+                  Bucket
+                  <select
+                    value={merchantBucket}
+                    onChange={(e) => setMerchantBucket(e.target.value as 'week' | 'month')}
+                  >
+                    <option value="month">Monthly</option>
+                    <option value="week">Weekly</option>
+                  </select>
+                </label>
+                <label>
+                  Merchants
+                  <select
+                    value={merchantTopN}
+                    onChange={(e) => setMerchantTopN(Number(e.target.value))}
+                  >
+                    <option value={5}>Top 5</option>
+                    <option value={8}>Top 8</option>
+                    <option value={12}>Top 12</option>
+                  </select>
+                </label>
+                <p className="category-editor-note">
+                  Merchant spend from {merchantHistory.start} through {merchantHistory.end}.
+                  Uses canonical merchant names when present, otherwise grouped normalized descriptions.
+                </p>
+              </div>
+              <div className="grid two">
+                <div className={isMobile ? 'chart-scroll' : ''}>
+                  <ResponsiveContainer
+                    width={isMobile ? 660 : '100%'}
+                    height={Math.max(320, merchantLeaderboardRows.length * 42)}
+                  >
+                    <BarChart
+                      data={merchantLeaderboardRows}
+                      layout="vertical"
+                      margin={{ top: 8, right: isMobile ? 72 : 20, bottom: 8, left: 12 }}
+                    >
+                      <CartesianGrid
+                        stroke="var(--text-subtle)"
+                        strokeDasharray="3 3"
+                        horizontal={false}
+                      />
+                      <XAxis type="number" stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
+                      <YAxis
+                        type="category"
+                        dataKey="merchant"
+                        width={isMobile ? 220 : 190}
+                        stroke="var(--fg)"
+                        tick={{ fill: 'var(--fg)', fontSize: 12 }}
+                      />
+                      <Tooltip {...tooltipStyle} cursor={false} />
+                      <Bar
+                        dataKey="total"
+                        name="Total spend"
+                        radius={[8, 8, 8, 8]}
+                        cursor="pointer"
+                        onClick={(data) => {
+                          if (data?.merchant) openTransactionsForMerchant(String(data.merchant));
+                        }}
+                      >
+                        <LabelList dataKey="total" content={<SignedCurrencyLabel />} />
+                        {merchantLeaderboardRows.map((row, idx) => (
+                          <Cell key={row.merchant} fill={merchantSeriesColor(idx)} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className={isMobile ? 'chart-scroll' : ''}>
+                  <ResponsiveContainer width={isMobile ? 660 : '100%'} height={320}>
+                    <LineChart
+                      data={merchantTrendRows}
+                      margin={{ top: 8, right: 20, bottom: 8, left: 4 }}
+                    >
+                      <CartesianGrid
+                        stroke="var(--text-subtle)"
+                        strokeDasharray="3 3"
+                        vertical={false}
+                      />
+                      <XAxis
+                        dataKey="bucket_label"
+                        stroke="var(--fg)"
+                        tick={{ fill: 'var(--fg)', fontSize: 12 }}
+                      />
+                      <YAxis stroke="var(--fg)" tick={{ fill: 'var(--fg)' }} />
+                      <Tooltip {...tooltipStyle} />
+                      {!isMobile && <Legend formatter={legendFormatter} />}
+                      {merchantTrendSeries.map((merchant, idx) => (
+                        <Line
+                          key={merchant}
+                          dataKey={merchant}
+                          name={merchant}
+                          stroke={merchantSeriesColor(idx)}
+                          strokeWidth={2.5}
+                          dot={false}
+                          activeDot={{ r: 5 }}
+                        />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+              <table className="table dense">
+                <thead>
+                  <tr>
+                    <th>Merchant</th>
+                    <th>Total</th>
+                    <th>Avg / bucket</th>
+                    <th>Latest bucket</th>
+                    <th>Active buckets</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {merchantLeaderboardRows.map((row) => (
+                    <tr key={row.merchant}>
+                      <td>
+                        <button
+                          type="button"
+                          className="link-button"
+                          onClick={() => openTransactionsForMerchant(row.merchant)}
+                        >
+                          {row.merchant}
+                        </button>
+                      </td>
+                      <td>${row.total.toFixed(0)}</td>
+                      <td>${row.average_per_bucket.toFixed(0)}</td>
+                      <td>${row.latest_bucket.toFixed(0)}</td>
+                      <td>{row.active_buckets}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <h4>Top Merchant By Category Family</h4>
+              <table className="table dense">
+                <thead>
+                  <tr>
+                    <th>Family</th>
+                    <th>Merchant</th>
+                    <th>Merchant spend</th>
+                    <th>Family spend</th>
+                    <th>Share</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {merchantHistory.top_by_family.map((row) => (
+                    <tr key={`${row.family}-${row.merchant}`}>
+                      <td>{row.family}</td>
+                      <td>
+                        <button
+                          type="button"
+                          className="link-button"
+                          onClick={() => openTransactionsForMerchant(row.merchant)}
+                        >
+                          {row.merchant}
+                        </button>
+                      </td>
+                      <td>${row.total.toFixed(0)}</td>
+                      <td>${row.family_total.toFixed(0)}</td>
+                      <td>{row.share_of_family.toFixed(1)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          ) : (
+            <p className="category-editor-note">
+              No merchant spend history available for this window.
+            </p>
           )
         },
         {
@@ -768,7 +1123,14 @@ export function AnalyticsPage() {
                 />
                 <Tooltip {...tooltipStyle} />
                 {!isMobile && <Legend formatter={legendFormatter} />}
-                <Bar dataKey="signed_balance" name="Net balance">
+                <Bar
+                  dataKey="signed_balance"
+                  name="Net balance"
+                  cursor="pointer"
+                  onClick={(data) => {
+                    if (data?.account_id) openTransactionsForAccount(String(data.account_id));
+                  }}
+                >
                   <LabelList dataKey="signed_balance" content={<SignedCurrencyLabel />} />
                   {accountBalanceRows.map((row) => (
                     <Cell
@@ -842,7 +1204,15 @@ export function AnalyticsPage() {
                     tick={{ fill: 'var(--fg)' }}
                   />
                   <Tooltip {...tooltipStyle} cursor={false} />
-                  <Bar dataKey="debt" name="Debt balance" fill="var(--danger)">
+                  <Bar
+                    dataKey="debt"
+                    name="Debt balance"
+                    fill="var(--danger)"
+                    cursor="pointer"
+                    onClick={(data) => {
+                      if (data?.account_id) openTransactionsForAccount(String(data.account_id));
+                    }}
+                  >
                     <LabelList dataKey="debt" content={<SignedCurrencyLabel />} />
                   </Bar>
                 </BarChart>
@@ -1154,11 +1524,19 @@ export function AnalyticsPage() {
                           dataKey="payment_amount"
                           name="Payments seen"
                           fill="var(--series-5)"
+                          cursor="pointer"
+                          onClick={() => {
+                            if (mortgageAccountId) openTransactionsForAccount(mortgageAccountId, true);
+                          }}
                         />
                         <Bar
                           dataKey="charge_amount"
                           name="Charges seen"
                           fill="var(--danger)"
+                          cursor="pointer"
+                          onClick={() => {
+                            if (mortgageAccountId) openTransactionsForAccount(mortgageAccountId, true);
+                          }}
                         />
                       </BarChart>
                     </ResponsiveContainer>
