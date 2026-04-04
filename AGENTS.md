@@ -87,6 +87,38 @@ Key constraints/indexes:
 - Transactions table paginated with server-side filtering.
 - Sankey uses pre-aggregated edges per selected period.
 
+## Agent Workflow Notes
+- The frontend is commonly run in tmux session `budget-app`, usually pane `budget-app:0.1`.
+- The backend is commonly run in tmux session `budget-app`, usually pane `budget-app:0.0`.
+- To verify the live frontend, do not rely on code-on-disk alone. Check tmux pane output and hit Vite directly at `http://127.0.0.1:5173/budget/`.
+- Useful live checks:
+  - `tmux list-panes -a -F '#S:#I.#P #{pane_current_command} #{pane_current_path}'`
+  - `tmux capture-pane -t budget-app:0.1 -p | tail -n 40`
+  - `curl -I http://127.0.0.1:5173/budget/`
+  - `curl 'http://127.0.0.1:5173/budget/src/...?...'` to confirm the running Vite module contains a change.
+- If the frontend pane disappears after `C-c`, recreate it with:
+  - `tmux split-window -h -t budget-app:0 'cd /home/harmony/repos/budget-tracker && make dev-frontend'`
+- After meaningful frontend changes, rebuild with `cd frontend && npm run build` before restarting tmux.
+
+## UI Implementation Notes
+- Prefer verifying the currently served module over assuming Vite HMR picked up a change.
+- For analytics and dashboard period navigation, the repo now uses explicit selected week/month/year state rather than always binding to the current period. Preserve that pattern when extending timeline controls.
+- The Categorization Studio now surfaces the most important metrics inline at the top of the Transactions section. Keep primary summary stats visible without requiring expansion.
+- The category selector in transaction tables is sensitive to clipping and portal behavior. Avoid reintroducing hover flyout columns. The safer pattern in this repo is a portalized single-column tree with inline expand/collapse rows.
+- If a dropdown menu is rendered through a portal, outside-click detection must treat both the trigger container and the portal menu itself as inside targets.
+
+## Search and LLM Notes
+- Transaction search supports fuzzy terms and quoted exact phrases. Preserve both behaviors when changing search logic.
+- The Categorization Studio supports distinct LLM prompt modes for `high_precision` and `high_coverage`. Do not collapse them back into one mode.
+- LLM validation should report true counts, not truncated display lists. When adjusting validation/preflight logic, keep count fields authoritative.
+
+## Tailscale Notes
+- This repo includes a `--tailscale` startup mode and `scripts/configure_tailscale_service.sh`.
+- The intended split is:
+  - normal local/shared-host mode: app served under `/budget`
+  - tailscale mode: app served at `/`
+- Tailscale Services require a tagged node and host approval in the Tailscale admin console. Local repo changes alone do not publish the service hostname.
+
 ## Testing & Acceptance Criteria
 - Idempotent sync (no new rows on double run).
 - Pending reconciliation prevents duplicates.
