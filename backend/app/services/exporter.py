@@ -811,19 +811,18 @@ def build_sheets_xlsx(workbook: dict) -> bytes:
         value: object | None,
         *,
         columns: list[str],
+        include_header: bool = True,
     ) -> str | None:
-        if row_idx == 1:
+        if include_header and row_idx == 1:
             return "header"
         if sheet_name == dashboard_name:
             if row_idx == 1:
                 return "title"
             if row_idx == 2:
                 return "header"
-            if col_idx == 2:
-                return dashboard_metrics.get(str(columns[row_idx - 2][0]) if False else None)
-        if sheet_name == dashboard_name and row_idx >= 3 and col_idx == 2:
-            metric = str(dashboard_rows[row_idx - 1][0])
-            return dashboard_metrics.get(metric)
+            if row_idx >= 3 and col_idx == 2:
+                metric = str(dashboard_rows[row_idx - 1][0])
+                return dashboard_metrics.get(metric)
         if not columns or col_idx > len(columns):
             return None
         header = columns[col_idx - 1]
@@ -850,13 +849,27 @@ def build_sheets_xlsx(workbook: dict) -> bytes:
             return "integer" if isinstance(value, (int, float)) or isinstance(value, dict) else None
         return None
 
-    def sheet_xml(columns: list[str], rows: list[list[object | None]], *, with_drawing: bool = False, sheet_name: str) -> str:
-        all_rows = [columns, *rows]
+    def sheet_xml(
+        columns: list[str],
+        rows: list[list[object | None]],
+        *,
+        with_drawing: bool = False,
+        sheet_name: str,
+        include_header: bool = True,
+    ) -> str:
+        all_rows = [columns, *rows] if include_header else rows
         row_xml = []
         for row_idx, row in enumerate(all_rows, start=1):
             cells = []
             for col_idx, value in enumerate(row, start=1):
-                style_name = infer_style(sheet_name, row_idx, col_idx, value, columns=columns)
+                style_name = infer_style(
+                    sheet_name,
+                    row_idx,
+                    col_idx,
+                    value,
+                    columns=columns,
+                    include_header=include_header,
+                )
                 cells.append(
                     xml_cell(f"{col_name(col_idx)}{row_idx}", value, style_name=style_name)
                 )
@@ -872,8 +885,13 @@ def build_sheets_xlsx(workbook: dict) -> bytes:
 </worksheet>"""
 
     def dashboard_sheet_xml() -> str:
-        dashboard_columns = ["label", "value"]
-        return sheet_xml(dashboard_columns, dashboard_rows, with_drawing=True, sheet_name=dashboard_name)
+        return sheet_xml(
+            [],
+            dashboard_rows,
+            with_drawing=True,
+            sheet_name=dashboard_name,
+            include_header=False,
+        )
 
     def chart_xml(title: str, category_range: str, value_range: str) -> str:
         return f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

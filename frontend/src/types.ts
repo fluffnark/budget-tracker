@@ -56,6 +56,7 @@ export type Category = {
   parent_id: number | null;
   name: string;
   system_kind: string;
+  spend_bucket: string | null;
   color: string | null;
   icon: string | null;
 };

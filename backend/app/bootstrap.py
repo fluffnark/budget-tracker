@@ -15,9 +15,10 @@ DEFAULT_CATEGORIES = {
         "Utilities/Internet",
         "Utilities/Mobile",
     ],
-    "Food": ["Groceries", "Dining"],
+    "Food": ["Groceries", "Dining", "Coffee", "Alcohol"],
     "Transportation": ["Fuel", "Transit", "Repairs"],
     "Health": ["Medical", "Pharmacy"],
+    "Insurance": [],
     "Personal": ["Clothing", "Home Supplies"],
     "Entertainment": ["Streaming", "Events"],
     "Travel": ["Flights", "Hotels"],
@@ -36,6 +37,7 @@ DEFAULT_CATEGORY_STYLE = {
     "Food": {"color": "#F4A261", "icon": "🛒"},
     "Transportation": {"color": "#3A86FF", "icon": "🚗"},
     "Health": {"color": "#9D4EDD", "icon": "🩺"},
+    "Insurance": {"color": "#4D908E", "icon": "🛡️"},
     "Personal": {"color": "#8D99AE", "icon": "🧍"},
     "Entertainment": {"color": "#FF006E", "icon": "🎬"},
     "Travel": {"color": "#118AB2", "icon": "✈️"},
@@ -66,6 +68,33 @@ DEFAULT_SETTINGS = {
 }
 
 
+def _default_spend_bucket(name: str, parent_name: str | None, system_kind: str) -> str | None:
+    if system_kind == "income":
+        return "income"
+    if system_kind == "transfer":
+        return "transfer"
+    if system_kind == "uncategorized":
+        return "uncategorized"
+    if system_kind != "expense":
+        return None
+
+    family = parent_name or name
+    essentials = {"Housing", "Utilities", "Transportation", "Health", "Insurance", "Taxes"}
+    discretionary = {"Entertainment", "Travel", "Charity", "Personal"}
+    savings = {"Education"}
+    debt = {"Fees & Interest"}
+
+    if family in essentials:
+        return "essential"
+    if family in discretionary:
+        return "discretionary"
+    if family in savings:
+        return "savings"
+    if family in debt:
+        return "debt"
+    return "essential"
+
+
 def ensure_seed_data(db: Session) -> None:
     for key, value in DEFAULT_SETTINGS.items():
         existing = db.execute(select(AppSetting).where(AppSetting.key == key)).scalar_one_or_none()
@@ -85,6 +114,7 @@ def ensure_seed_data(db: Session) -> None:
             else:
                 kind = "expense"
             parent = Category(name=parent_name, system_kind=kind, parent_id=None)
+            parent.spend_bucket = _default_spend_bucket(parent_name, None, kind)
             style = DEFAULT_CATEGORY_STYLE.get(parent_name)
             if style:
                 parent.color = style["color"]
@@ -94,6 +124,8 @@ def ensure_seed_data(db: Session) -> None:
             existing_categories.add(parent_name)
         else:
             parent = db.execute(select(Category).where(Category.name == parent_name)).scalar_one()
+            if not parent.spend_bucket:
+                parent.spend_bucket = _default_spend_bucket(parent.name, None, parent.system_kind)
             style = DEFAULT_CATEGORY_STYLE.get(parent_name)
             if style and not parent.color:
                 parent.color = style["color"]
@@ -113,6 +145,7 @@ def ensure_seed_data(db: Session) -> None:
                     name=child,
                     system_kind=kind,
                     parent_id=parent.id,
+                    spend_bucket=_default_spend_bucket(child, parent.name, kind),
                     color=parent.color,
                     icon=parent.icon,
                 )

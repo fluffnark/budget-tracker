@@ -2,6 +2,12 @@ var _a;
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 var proxyTarget = (_a = process.env.VITE_PROXY_TARGET) !== null && _a !== void 0 ? _a : 'http://127.0.0.1:8000';
+var defaultAllowedHosts = [
+    'harmony.local',
+    'budget.great-kettle.ts.net',
+    '127.0.0.1',
+    'localhost'
+];
 function normalizeViteBase(raw) {
     var value = (raw !== null && raw !== void 0 ? raw : '/').trim();
     if (!value || value === '/')
@@ -11,12 +17,19 @@ function normalizeViteBase(raw) {
         ? withLeading
         : "".concat(withLeading, "/");
 }
+function resolveAllowedHosts(raw) {
+    var parsed = (raw !== null && raw !== void 0 ? raw : '')
+        .split(',')
+        .map(function (value) { return value.trim(); })
+        .filter(Boolean);
+    return parsed.length > 0 ? parsed : defaultAllowedHosts;
+}
 var basePath = normalizeViteBase(process.env.VITE_BASE_PATH);
 export default defineConfig({
     base: basePath,
     plugins: [react()],
     server: {
-        allowedHosts: ['harmony.local'],
+        allowedHosts: resolveAllowedHosts(process.env.VITE_ALLOWED_HOSTS),
         proxy: {
             '/api': {
                 target: proxyTarget,

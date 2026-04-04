@@ -107,6 +107,7 @@ class Category(Base):
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     system_kind: Mapped[str] = mapped_column(String(50), nullable=False)
+    spend_bucket: Mapped[str | None] = mapped_column(String(30), nullable=True)
     color: Mapped[str | None] = mapped_column(String(20), nullable=True)
     icon: Mapped[str | None] = mapped_column(String(50), nullable=True)
 

@@ -20,6 +20,7 @@ A local-first budget tracking app with SimpleFIN ingestion, transfer deconflicti
 4. Start the app with the repo tmux launcher:
    - `./start_app.sh`
    - Fast local restart: `./start_app.sh --docker-fast`
+   - Tailscale service mode: `./start_app.sh --tailscale`
 5. Open the app:
    - Frontend: `http://127.0.0.1:5173/budget/`
    - Backend health: `http://127.0.0.1:58010/api/health`
@@ -42,6 +43,7 @@ Use the included launcher for `http://harmony.local:5173/`:
    - `./start_app.sh` (docker with rebuild)
    - `./start_app.sh --docker-fast` (docker without rebuild)
    - `./start_app.sh --local` (lightweight host-run backend/frontend; docker db only)
+   - `./start_app.sh --tailscale` (docker with rebuild, frontend bound to localhost, app served from `/`)
 2. Attach:
    - `tmux attach -t budget-app`
 3. Pane layout:
@@ -56,6 +58,28 @@ Notes:
 - `start_app.sh --local` is the lightest startup path and uses `make dev-local-backend` / `make dev-local-frontend`.
 - If `8000` is already in use, backend is auto-mapped to `58010` (or another fallback).
 - Frontend is exposed on `0.0.0.0:5173` for `harmony.local`.
+- `start_app.sh --tailscale` keeps the frontend on `127.0.0.1` and clears the `/budget` basename so the app can live at `https://budget.great-kettle.ts.net/`.
+
+## Tailscale Service (`budget.great-kettle.ts.net`)
+This repo now includes a dedicated Tailscale service path for the app root.
+
+1. Start the app in Tailscale mode:
+   - `./start_app.sh --tailscale`
+2. Advertise the service host:
+   - `./scripts/configure_tailscale_service.sh`
+   - Or `make tailscale-service`
+3. In the Tailscale admin console:
+   - Define a Service named `budget`
+   - Add endpoint `tcp:443`
+   - Ensure this machine uses a tag-based identity
+   - Approve the pending host advertisement
+4. Open:
+   - `https://budget.great-kettle.ts.net/`
+
+Notes:
+- Tailscale Services require Tailscale v1.86.0 or later; this machine already has a compatible client.
+- The helper script advertises `svc:budget` on HTTPS `443` and proxies to `http://127.0.0.1:${FRONTEND_PORT:-5173}`.
+- The Vite dev server now allows `budget.great-kettle.ts.net` as a host header, so the browser will not reject that hostname.
 
 ## Nginx Prefix Routing (`/budget`)
 To host without colliding with other local services, publish this app only under `harmony.local/budget`.

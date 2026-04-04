@@ -24,6 +24,25 @@ function baseTransactions() {
       transfer_id: null,
       notes: null,
       manual_category_override: false
+    },
+    {
+      id: 'txn-2',
+      account_id: 'acct-2',
+      account_name: 'Credit Card',
+      account_type: 'credit',
+      posted_at: '2026-02-03T00:00:00Z',
+      amount: -48.75,
+      currency: 'USD',
+      description_raw: 'UTILITY PAYMENT',
+      description_norm: 'UTILITY PAYMENT',
+      is_pending: false,
+      category_id: 5,
+      category_name: 'Food',
+      merchant_id: null,
+      merchant_name: 'Utility Co',
+      transfer_id: null,
+      notes: 'monthly utility',
+      manual_category_override: false
     }
   ];
 }
@@ -32,6 +51,10 @@ describe('CategorizePage', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      configurable: true
+    });
     fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
@@ -62,6 +85,36 @@ describe('CategorizePage', () => {
         }
         if (url.includes('/api/transactions')) {
           return new Response(JSON.stringify(baseTransactions()));
+        }
+        if (url.includes('/api/export/llm')) {
+          return new Response(
+            JSON.stringify({
+              payload: {
+                transactions: baseTransactions().map((txn) => ({
+                  id: txn.id,
+                  date: txn.posted_at.slice(0, 10),
+                  amount: txn.amount,
+                  currency: txn.currency,
+                  description_norm: txn.description_norm,
+                  merchant_canonical: txn.merchant_name,
+                  account_type: txn.account_type,
+                  category_id: txn.category_id,
+                  category_path: txn.category_name ?? undefined,
+                  is_pending: txn.is_pending,
+                  is_transfer: false
+                })),
+                categories: [
+                  {
+                    id: 5,
+                    full_path: 'Food',
+                    system_kind: 'expense',
+                    parent_id: null
+                  }
+                ]
+              },
+              prompt_template: ''
+            })
+          );
         }
         if (url.includes('/api/analytics/sankey')) {
           return new Response(JSON.stringify({ nodes: [], links: [] }));
@@ -118,9 +171,36 @@ describe('CategorizePage', () => {
       expect(screen.getByText('COFFEE SHOP')).toBeInTheDocument();
     });
     expect(
-      screen.getByRole('button', { name: /Transactions \(1\)/i })
+      screen.getByRole('button', { name: /Transactions \(2\)/i })
     ).toBeInTheDocument();
     expect(screen.getByTestId('categorize-layout')).toBeInTheDocument();
+  });
+
+  it('filters studio rows with the transaction search field', async () => {
+    render(
+      <MemoryRouter>
+        <CategorizePage />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('COFFEE SHOP')).toBeInTheDocument();
+      expect(screen.getByText('UTILITY PAYMENT')).toBeInTheDocument();
+    });
+
+    fireEvent.change(
+      screen.getByPlaceholderText(
+        'Keyword, merchant, category, or similar text'
+      ),
+      {
+        target: { value: 'cofee' }
+      }
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('COFFEE SHOP')).toBeInTheDocument();
+      expect(screen.queryByText('UTILITY PAYMENT')).not.toBeInTheDocument();
+    });
   });
 
   it('requests grouped sankey data for the studio chart', async () => {
@@ -231,6 +311,36 @@ describe('CategorizePage', () => {
         if (url.includes('/api/transactions')) {
           return new Response(JSON.stringify(baseTransactions()));
         }
+        if (url.includes('/api/export/llm')) {
+          return new Response(
+            JSON.stringify({
+              payload: {
+                transactions: baseTransactions().map((txn) => ({
+                  id: txn.id,
+                  date: txn.posted_at.slice(0, 10),
+                  amount: txn.amount,
+                  currency: txn.currency,
+                  description_norm: txn.description_norm,
+                  merchant_canonical: txn.merchant_name,
+                  account_type: txn.account_type,
+                  category_id: txn.category_id,
+                  category_path: txn.category_name ?? undefined,
+                  is_pending: txn.is_pending,
+                  is_transfer: false
+                })),
+                categories: [
+                  {
+                    id: 5,
+                    full_path: 'Food',
+                    system_kind: 'expense',
+                    parent_id: null
+                  }
+                ]
+              },
+              prompt_template: ''
+            })
+          );
+        }
         if (url.includes('/api/analytics/sankey')) {
           return new Response(JSON.stringify({ nodes: [], links: [] }));
         }
@@ -266,5 +376,56 @@ describe('CategorizePage', () => {
         screen.getByRole('button', { name: 'Auto-categorize' })
       ).toBeEnabled();
     });
+  });
+
+  it('copies different LLM prompt instructions for precision and coverage modes', async () => {
+    render(
+      <MemoryRouter>
+        <CategorizePage />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('COFFEE SHOP')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Auto-categorize' }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Review Auto-categorize Suggestions')
+      ).toBeInTheDocument();
+    });
+
+    const writeText = vi.mocked(navigator.clipboard.writeText);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Copy compact LLM payload' })
+    );
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledTimes(1);
+    });
+    expect(writeText.mock.calls[0][0]).toContain(
+      'Skip uncertain transactions instead of guessing.'
+    );
+
+    fireEvent.change(screen.getByLabelText('Prompt mode'), {
+      target: { value: 'high_coverage' }
+    });
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Copy compact LLM payload' })
+    );
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledTimes(2);
+    });
+    expect(writeText.mock.calls[1][0]).toContain(
+      'High coverage mode: aim to categorize as many `review_transactions` as possible'
+    );
+    expect(writeText.mock.calls[1][0]).toContain(
+      'Do not use uncategorized as a fallback.'
+    );
   });
 });

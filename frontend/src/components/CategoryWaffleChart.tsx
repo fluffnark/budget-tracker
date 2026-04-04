@@ -7,11 +7,11 @@ type CategoryWaffleItem = {
 
 type CategoryWaffleChartProps = {
   items: CategoryWaffleItem[];
-  paletteKey?: string;
   maxLegendItems?: number;
   caption?: string;
   onLegendClick?: (category: string) => void;
   compact?: boolean;
+  getCategoryColor?: (category: string, index: number) => string;
 };
 
 type WaffleCell = {
@@ -30,30 +30,11 @@ type WaffleLegendItem = {
   color: string;
 };
 
-function categoryColor(category: string, index: number): string {
-  const palette = [
-    '#5b8ff9',
-    '#f6a35b',
-    '#5ad8a6',
-    '#e8684a',
-    '#6dc8ec',
-    '#9270ca',
-    '#ff9d4d',
-    '#269a99',
-    '#c2c8d5',
-    '#7f8cff'
-  ];
-  let hash = 0;
-  for (let i = 0; i < category.length; i += 1) {
-    hash = (hash * 31 + category.charCodeAt(i)) >>> 0;
-  }
-  const palettePick = palette[hash % palette.length];
-  if (index < palette.length * 2) return palettePick;
-  const hue = hash % 360;
-  return `hsl(${hue} 62% 52%)`;
-}
-
-function buildWaffle(items: CategoryWaffleItem[], maxLegendItems: number) {
+function buildWaffle(
+  items: CategoryWaffleItem[],
+  maxLegendItems: number,
+  getCategoryColor: (category: string, index: number) => string
+) {
   const source = [...items]
     .filter((item) => item.amount > 0)
     .sort((a, b) => b.amount - a.amount);
@@ -66,7 +47,7 @@ function buildWaffle(items: CategoryWaffleItem[], maxLegendItems: number) {
   const primary = source.slice(0, maxLegendItems).map((item, index) => ({
     category: item.category,
     amount: item.amount,
-    color: categoryColor(item.category, index)
+    color: getCategoryColor(item.category, index)
   }));
   const otherAmount = source
     .slice(maxLegendItems)
@@ -127,10 +108,11 @@ export function CategoryWaffleChart({
   maxLegendItems = 6,
   caption = 'Each square represents about 1% of the total.',
   onLegendClick,
-  compact = false
+  compact = false,
+  getCategoryColor = () => 'var(--series-2)'
 }: CategoryWaffleChartProps) {
   const [hoveredCategory, setHoveredCategory] = useState<string | null>(null);
-  const waffle = buildWaffle(items, maxLegendItems);
+  const waffle = buildWaffle(items, maxLegendItems, getCategoryColor);
   const dollarsPerDot = waffle.total > 0 ? waffle.total / 140 : 0;
   const captionText = dollarsPerDot > 0 ? caption : caption;
 
@@ -164,6 +146,16 @@ export function CategoryWaffleChart({
             }`}
             style={{ background: cell.color }}
             title={`${cell.category}: $${cell.amount.toFixed(0)} (${cell.percent.toFixed(1)}%)`}
+            onClick={() => onLegendClick?.(cell.category)}
+            role={onLegendClick ? 'button' : undefined}
+            tabIndex={onLegendClick ? 0 : undefined}
+            onKeyDown={(event) => {
+              if (!onLegendClick) return;
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                onLegendClick(cell.category);
+              }
+            }}
           />
         ))}
       </div>

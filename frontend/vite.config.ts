@@ -6,6 +6,12 @@ declare const process: {
 };
 
 const proxyTarget = process.env.VITE_PROXY_TARGET ?? 'http://127.0.0.1:8000';
+const defaultAllowedHosts = [
+  'harmony.local',
+  'budget.great-kettle.ts.net',
+  '127.0.0.1',
+  'localhost'
+];
 
 function normalizeViteBase(raw: string | undefined): string {
   const value = (raw ?? '/').trim();
@@ -16,13 +22,21 @@ function normalizeViteBase(raw: string | undefined): string {
     : `${withLeading}/`;
 }
 
+function resolveAllowedHosts(raw: string | undefined): string[] {
+  const parsed = (raw ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return parsed.length > 0 ? parsed : defaultAllowedHosts;
+}
+
 const basePath = normalizeViteBase(process.env.VITE_BASE_PATH);
 
 export default defineConfig({
   base: basePath,
   plugins: [react()],
   server: {
-    allowedHosts: ['harmony.local'],
+    allowedHosts: resolveAllowedHosts(process.env.VITE_ALLOWED_HOSTS),
     proxy: {
       '/api': {
         target: proxyTarget,

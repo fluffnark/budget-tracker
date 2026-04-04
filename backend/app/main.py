@@ -1128,7 +1128,9 @@ def validate_categorization_from_llm(
     _: Owner = Depends(get_current_owner),
     db: Session = Depends(get_db),
 ) -> CategorizationValidateLLMResponse:
-    transaction_ids = sorted({value.strip() for value in payload.transaction_ids if value.strip()})
+    normalized_transaction_ids = [value.strip() for value in payload.transaction_ids]
+    blank_transaction_id_count = sum(1 for value in normalized_transaction_ids if not value)
+    transaction_ids = sorted({value for value in normalized_transaction_ids if value})
     category_ids = sorted(set(payload.category_ids))
     _resolved_transaction_ids, unknown_transaction_ids, ambiguous_transaction_ids = (
         _resolve_transaction_ids(db, transaction_ids)
@@ -1141,10 +1143,16 @@ def validate_categorization_from_llm(
 
     return CategorizationValidateLLMResponse(
         unknown_transaction_ids=unknown_transaction_ids,
+        unknown_transaction_count=len(unknown_transaction_ids),
         ambiguous_transaction_ids=ambiguous_transaction_ids,
+        ambiguous_transaction_count=len(ambiguous_transaction_ids),
         invalid_category_ids=[
             category_id for category_id in category_ids if category_id not in existing_category_ids
         ],
+        invalid_category_count=len(
+            [category_id for category_id in category_ids if category_id not in existing_category_ids]
+        ),
+        blank_transaction_id_count=blank_transaction_id_count,
     )
 
 
@@ -1504,6 +1512,7 @@ def _serialize_category(category: Category) -> CategoryResponse:
         parent_id=category.parent_id,
         name=category.name,
         system_kind=category.system_kind,
+        spend_bucket=category.spend_bucket,
         color=category.color,
         icon=category.icon,
     )
@@ -1514,6 +1523,23 @@ def _category_name_exists(db: Session, name: str, *, skip_id: int | None = None)
     if skip_id is not None:
         q = q.where(Category.id != skip_id)
     return db.execute(q).scalar_one_or_none() is not None
+
+
+def _normalize_spend_bucket(system_kind: str, spend_bucket: str | None) -> str | None:
+    if spend_bucket is None:
+        return None
+    allowed = {
+        "expense": {"essential", "discretionary", "savings", "debt"},
+        "income": {"income"},
+        "transfer": {"transfer"},
+        "uncategorized": {"uncategorized"},
+    }
+    if spend_bucket not in allowed.get(system_kind, set()):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Spend bucket '{spend_bucket}' is not valid for category kind '{system_kind}'",
+        )
+    return spend_bucket
 
 
 def _validate_parent(
@@ -1568,6 +1594,7 @@ def create_category(
         name=name,
         parent_id=parent.id if parent else None,
         system_kind=payload.system_kind,
+        spend_bucket=_normalize_spend_bucket(payload.system_kind, payload.spend_bucket),
         color=payload.color.strip() if payload.color else None,
         icon=payload.icon.strip() if payload.icon else None,
     )
@@ -1598,6 +1625,13 @@ def patch_category(
     if "parent_id" in payload.model_fields_set:
         parent = _validate_parent(db, category_id=category.id, parent_id=payload.parent_id)
         category.parent_id = parent.id if parent else None
+    if "spend_bucket" in payload.model_fields_set:
+        category.spend_bucket = payload.spend_bucket
+    if (
+        "system_kind" in payload.model_fields_set
+        or "spend_bucket" in payload.model_fields_set
+    ):
+        category.spend_bucket = _normalize_spend_bucket(category.system_kind, category.spend_bucket)
     if "color" in payload.model_fields_set:
         category.color = payload.color.strip() if payload.color else None
     if "icon" in payload.model_fields_set:

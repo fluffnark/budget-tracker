@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+import re
 from statistics import mean
 
 from sqlalchemy import func, or_, select
@@ -20,6 +21,7 @@ class _CategoryInfo:
     parent_id: int | None
     parent_name: str | None
     family_name: str
+    spend_bucket: str | None
     color: str | None
     icon: str | None
     has_children: bool
@@ -93,6 +95,7 @@ def _load_category_info(db: Session) -> tuple[list[_CategoryInfo], dict[int, _Ca
             parent_id=category.parent_id,
             parent_name=by_id[category.parent_id].name if category.parent_id in by_id else None,
             family_name=(path_map.get(category.id, category.name).split(" > ")[0]),
+            spend_bucket=category.spend_bucket,
             color=category.color,
             icon=category.icon,
             has_children=child_counts[category.id] > 0,
@@ -117,7 +120,11 @@ def _default_fixed(path: str) -> bool:
     )
 
 
-def _default_essential(family: str) -> bool:
+def _default_essential(family: str, spend_bucket: str | None = None) -> bool:
+    if spend_bucket == "essential":
+        return True
+    if spend_bucket == "discretionary":
+        return False
     return family not in {"Entertainment", "Travel", "Charity", "Personal"}
 
 
@@ -287,7 +294,9 @@ def get_budget_month_snapshot(db: Session, month: date) -> dict:
                 "last_month_actual": round(last_month_actuals.get(info.id, 0.0), 2),
                 "avg_3_month_actual": round(avg_3_month_actuals.get(info.id, 0.0), 2),
                 "is_fixed": bool(plan.is_fixed) if plan else _default_fixed(info.path),
-                "is_essential": bool(plan.is_essential) if plan else _default_essential(info.family_name),
+                "is_essential": bool(plan.is_essential)
+                if plan
+                else _default_essential(info.family_name, info.spend_bucket),
                 "rollover_mode": plan.rollover_mode if plan else "none",
             }
         )
@@ -477,7 +486,29 @@ def get_budget_period_summary(db: Session, *, period: str, anchor: date) -> dict
 def _subscription_group_label(merchant_name: str | None, description_norm: str) -> str:
     if merchant_name:
         return merchant_name
-    return description_norm[:80]
+    label = (description_norm or "").upper()
+    label = re.sub(r"^HOLD:\s*", "", label)
+    for token in ("SQ *", "SQ*", "TST*", "SP ", "FNM*", "PAYPAL *", "PAYPAL "):
+        label = label.replace(token, "")
+    label = " ".join(label.split())
+    canonical_patterns = [
+        (r"\bSPOTIFY\b", "SPOTIFY"),
+        (r"\bPATREON\b", "PATREON"),
+        (r"\bPNM\b.*\bELECTRIC\b", "PNM ELECTRIC"),
+        (r"\bSTARLINK\b", "STARLINK"),
+        (r"\bOPENAI\b|\bCHATGPT\b", "OPENAI CHATGPT"),
+    ]
+    for pattern, replacement in canonical_patterns:
+        if re.search(pattern, label):
+            return replacement
+    label = re.sub(r"\bP[0-9A-Z]{6,}\b", "", label)
+    label = re.sub(r"\bTRACER:\s.*$", "", label)
+    label = re.sub(r"\b[0-9]{4}\b", "", label)
+    label = re.sub(r"\s+", " ", label).strip()
+    for suffix in (" ALBUQUERQUE NM", " NM", " CA", " WA", " NY", " IT", " GA"):
+        if label.endswith(suffix):
+            label = label[: -len(suffix)].strip()
+    return label[:80]
 
 
 def _subscription_cadence(avg_days: float) -> tuple[str, float] | None:
@@ -497,6 +528,8 @@ def _subscription_cadence(avg_days: float) -> tuple[str, float] | None:
 
 
 def get_recurring_payment_candidates(db: Session, *, anchor: date) -> dict:
+    categories = list(db.execute(select(Category)).scalars())
+    category_by_id = {category.id: category for category in categories}
     lookback_start = anchor - timedelta(days=365)
     lookback_end = anchor + timedelta(days=1)
     rows = db.execute(
@@ -512,24 +545,59 @@ def get_recurring_payment_candidates(db: Session, *, anchor: date) -> dict:
         .order_by(Transaction.posted_at.asc())
     ).all()
 
-    grouped: dict[tuple[str, int | None], list[tuple[Transaction, Category | None, Merchant | None]]] = defaultdict(list)
+    grouped: dict[str, list[tuple[Transaction, Category | None, Merchant | None]]] = defaultdict(list)
     for txn, category, merchant in rows:
         label = _subscription_group_label(
             merchant.name_canonical if merchant else None,
             txn.description_norm,
         )
-        grouped[(label.lower(), txn.category_id)].append((txn, category, merchant))
+        grouped[label.lower()].append((txn, category, merchant))
 
     entries: list[dict] = []
+    review_entries: list[dict] = []
     cancel_keywords = {
         "netflix", "spotify", "hulu", "disney", "youtube", "prime", "max",
         "apple", "icloud", "audible", "patreon", "peacock", "paramount",
-        "gym", "membership", "subscription",
+        "gym", "membership", "subscription", "chatgpt", "openai", "adobe",
+        "microsoft", "google one", "dropbox", "canva",
     }
     essential_families = {"Housing", "Utilities", "Insurance", "Debt", "Healthcare", "Transportation"}
+    variable_essential_labels = {"pnm electric", "starlink", "universal waste systems"}
 
     for items in grouped.values():
-        if len(items) < 3:
+        if len(items) < 2:
+            latest_txn, latest_category, latest_merchant = items[-1]
+            label = _subscription_group_label(
+                latest_merchant.name_canonical if latest_merchant else None,
+                latest_txn.description_norm,
+            )
+            lower_label = label.lower()
+            if not any(keyword in lower_label for keyword in cancel_keywords):
+                continue
+            if latest_category is None:
+                category_name = "Uncategorized"
+                family_name = "Uncategorized"
+            else:
+                category_name = latest_category.name
+                parent = category_by_id.get(latest_category.parent_id) if latest_category.parent_id else None
+                family_name = parent.name if parent is not None else latest_category.name
+            amount = round(abs(float(latest_txn.amount)), 2)
+            review_entries.append(
+                {
+                    "label": label,
+                    "category_name": category_name,
+                    "family_name": family_name,
+                    "cadence": "review",
+                    "occurrences": 1,
+                    "average_amount": amount,
+                    "estimated_monthly_cost": amount,
+                    "last_amount": amount,
+                    "last_posted_at": latest_txn.posted_at.date(),
+                    "next_expected_at": None,
+                    "is_cancel_candidate": True,
+                    "review_reason": "Only one matching charge in current history",
+                }
+            )
             continue
         txns = [txn for txn, _, _ in items]
         dates = [txn.posted_at.date() for txn in txns]
@@ -543,27 +611,82 @@ def get_recurring_payment_candidates(db: Session, *, anchor: date) -> dict:
         if cadence_info is None:
             continue
         cadence, monthly_factor = cadence_info
+        min_occurrences = 2 if cadence in {"quarterly", "semiannual", "annual"} else 3
+        if len(items) < min_occurrences:
+            latest_txn, latest_category, latest_merchant = items[-1]
+            label = _subscription_group_label(
+                latest_merchant.name_canonical if latest_merchant else None,
+                latest_txn.description_norm,
+            )
+            lower_label = label.lower()
+            if any(keyword in lower_label for keyword in cancel_keywords):
+                if latest_category is None:
+                    category_name = "Uncategorized"
+                    family_name = "Uncategorized"
+                else:
+                    category_name = latest_category.name
+                    parent = category_by_id.get(latest_category.parent_id) if latest_category.parent_id else None
+                    family_name = parent.name if parent is not None else latest_category.name
+                avg_preview = round(mean(amounts), 2)
+                category_bucket = latest_category.spend_bucket if latest_category is not None else None
+                review_entries.append(
+                    {
+                        "label": label,
+                        "category_name": category_name,
+                        "family_name": family_name,
+                        "cadence": cadence,
+                        "occurrences": len(items),
+                        "average_amount": avg_preview,
+                        "estimated_monthly_cost": round(avg_preview * monthly_factor, 2),
+                        "last_amount": round(abs(float(latest_txn.amount)), 2),
+                        "last_posted_at": latest_txn.posted_at.date(),
+                        "next_expected_at": latest_txn.posted_at.date() + timedelta(days=round(avg_days)),
+                        "is_cancel_candidate": category_bucket != "essential",
+                        "review_reason": "Not enough history to confirm a stable recurring pattern",
+                    }
+                )
+            continue
 
         avg_amount = mean(amounts)
         max_amount = max(amounts)
         min_amount = min(amounts)
         amount_spread_ratio = (max_amount - min_amount) / avg_amount if avg_amount else 0.0
         interval_spread = max(intervals) - min(intervals)
-        if amount_spread_ratio > 0.35 or interval_spread > 14:
-            continue
 
         latest_txn, latest_category, latest_merchant = items[-1]
         label = _subscription_group_label(
             latest_merchant.name_canonical if latest_merchant else None,
             latest_txn.description_norm,
         )
-        category_name = latest_category.name if latest_category else "Uncategorized"
-        family_name = category_name.split(" > ")[0]
+        categories_seen = [category for _, category, _ in items if category is not None]
+        representative_category = categories_seen[-1] if categories_seen else latest_category
+        if representative_category is None:
+            category_name = "Uncategorized"
+            family_name = "Uncategorized"
+        else:
+            category_name = representative_category.name
+            parent = (
+                category_by_id.get(representative_category.parent_id)
+                if representative_category.parent_id
+                else None
+            )
+            family_name = parent.name if parent is not None else representative_category.name
+        category_bucket = representative_category.spend_bucket if representative_category else None
+        lower_label = label.lower()
+        max_amount_spread_ratio = 0.45
+        if (
+            category_bucket == "essential"
+            or family_name in essential_families
+            or lower_label in variable_essential_labels
+        ):
+            max_amount_spread_ratio = 1.6
         estimated_monthly = round(avg_amount * monthly_factor, 2)
         next_expected = latest_txn.posted_at.date() + timedelta(days=round(avg_days))
-        lower_label = label.lower()
+        if amount_spread_ratio > max_amount_spread_ratio or interval_spread > 18:
+            continue
         is_cancel_candidate = (
-            family_name not in essential_families
+            category_bucket != "essential"
+            and family_name not in essential_families
             or any(keyword in lower_label for keyword in cancel_keywords)
         )
         entries.append(
@@ -583,6 +706,7 @@ def get_recurring_payment_candidates(db: Session, *, anchor: date) -> dict:
         )
 
     entries.sort(key=lambda item: (item["is_cancel_candidate"], item["estimated_monthly_cost"]), reverse=True)
+    review_entries.sort(key=lambda item: item["estimated_monthly_cost"], reverse=True)
     cancel_candidates = [entry for entry in entries if entry["is_cancel_candidate"]]
     essential_candidates = [entry for entry in entries if not entry["is_cancel_candidate"]]
 
@@ -594,4 +718,5 @@ def get_recurring_payment_candidates(db: Session, *, anchor: date) -> dict:
         ),
         "cancel_candidates": cancel_candidates[:8],
         "essential_candidates": essential_candidates[:8],
+        "review_candidates": review_entries[:8],
     }

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Bar,
   BarChart,
@@ -14,6 +15,7 @@ import { apiFetch } from '../api';
 import type { Account, Category, Transaction } from '../types';
 import { buildCategoryPathMap } from '../utils/categories';
 import { isLiabilityAccount } from '../utils/accounts';
+import { buildTransactionsHref } from '../utils/transactionsLink';
 
 type SignedBarLabelProps = {
   x?: number;
@@ -42,11 +44,34 @@ function SignedCurrencyLabel({ x = 0, y = 0, width = 0, height = 0, value = 0 }:
   );
 }
 
+function isHousingCategoryPath(path: string | null | undefined): boolean {
+  return (path ?? '').split(' > ')[0]?.toLowerCase() === 'housing';
+}
+
+function isMortgageAccountName(name: string): boolean {
+  return name.toLowerCase().includes('mortgage');
+}
+
+function shiftMonthWindow(base: Date, monthOffset: number) {
+  const value = new Date(Date.UTC(base.getFullYear(), base.getMonth(), 1));
+  value.setUTCMonth(value.getUTCMonth() + monthOffset);
+  const year = value.getUTCFullYear();
+  const month = value.getUTCMonth() + 1;
+  return {
+    start: `${year}-${String(month).padStart(2, '0')}-01`,
+    end: new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10)
+  };
+}
+
 export function DashboardPage() {
+  const navigate = useNavigate();
+  const now = useMemo(() => new Date(), []);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [includePending, setIncludePending] = useState(true);
+  const [excludeHousing, setExcludeHousing] = useState(true);
+  const [monthOffset, setMonthOffset] = useState(0);
   const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
@@ -79,25 +104,51 @@ export function DashboardPage() {
     [accounts]
   );
 
-  const monthKey = new Date().toISOString().slice(0, 7);
+  const selectedMonthWindow = useMemo(
+    () => shiftMonthWindow(now, monthOffset),
+    [monthOffset, now]
+  );
+  const monthStart = selectedMonthWindow.start;
+  const monthEnd = selectedMonthWindow.end;
+  const monthKey = monthStart.slice(0, 7);
+  const monthRangeLabel = useMemo(
+    () =>
+      new Intl.DateTimeFormat(undefined, {
+        month: 'long',
+        year: 'numeric'
+      }).format(new Date(`${monthStart}T00:00:00Z`)),
+    [monthStart]
+  );
   const monthTxns = transactions.filter((txn) =>
     txn.posted_at.startsWith(monthKey)
   );
   const filtered = includePending
     ? monthTxns
     : monthTxns.filter((txn) => !txn.is_pending);
+  const chartFilteredTransactions = useMemo(
+    () =>
+      excludeHousing
+        ? filtered.filter((txn) => {
+            const path =
+              (txn.category_id ? categoryPathMap.get(txn.category_id) : null) ??
+              txn.category_name;
+            return !isHousingCategoryPath(path);
+          })
+        : filtered,
+    [categoryPathMap, excludeHousing, filtered]
+  );
 
-  const inflow = filtered
+  const inflow = chartFilteredTransactions
     .filter((txn) => txn.amount > 0)
     .reduce((s, txn) => s + txn.amount, 0);
-  const outflow = filtered
+  const outflow = chartFilteredTransactions
     .filter((txn) => txn.amount < 0)
     .reduce((s, txn) => s + Math.abs(txn.amount), 0);
   const netCashflow = inflow - outflow;
 
   const spendingByFamily = useMemo(() => {
     const byFamily = new Map<string, number>();
-    for (const txn of filtered) {
+    for (const txn of chartFilteredTransactions) {
       if (txn.amount >= 0) continue;
       const path =
         (txn.category_id ? categoryPathMap.get(txn.category_id) : null) ??
@@ -110,22 +161,24 @@ export function DashboardPage() {
       .map(([family, amount]) => ({ family, amount: Number(amount.toFixed(2)) }))
       .sort((a, b) => b.amount - a.amount)
       .slice(0, 6);
-  }, [filtered, categoryPathMap]);
+  }, [chartFilteredTransactions, categoryPathMap]);
 
   const accountBalanceBars = useMemo(
     () =>
       accounts
+        .filter((acct) => !(excludeHousing && isLiabilityAccount(acct) && isMortgageAccountName(acct.name)))
         .map((acct) => {
           const rawBalance = Number(acct.balance ?? 0);
           const isLiability = isLiabilityAccount(acct);
           return {
+            account_id: acct.id,
             account: acct.name,
             balance: isLiability ? -Math.abs(rawBalance) : rawBalance,
             isLiability
           };
         })
         .sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance)),
-    [accounts]
+    [accounts, excludeHousing]
   );
 
   const sortedAccounts = useMemo(
@@ -170,15 +223,78 @@ export function DashboardPage() {
   );
   const mobileChartWidth = 560;
 
+  function openFamilyTransactions(family: string) {
+    navigate(
+      buildTransactionsHref({
+        start: monthStart,
+        end: monthEnd,
+        includePending,
+        includeTransfers: false,
+        categoryFamily: family
+      })
+    );
+  }
+
+  function openAccountTransactions(accountId: string) {
+    navigate(
+      buildTransactionsHref({
+        start: monthStart,
+        end: monthEnd,
+        includePending,
+        includeTransfers: true,
+        accountId
+      })
+    );
+  }
+
+  function renderMonthNavigator() {
+    return (
+      <div className="analytics-week-nav">
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => setMonthOffset((value) => value - 1)}
+          aria-label="Show previous month"
+        >
+          ←
+        </button>
+        <strong>{monthRangeLabel}</strong>
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => setMonthOffset((value) => Math.min(0, value + 1))}
+          disabled={monthOffset === 0}
+          aria-label="Show next month"
+        >
+          →
+        </button>
+      </div>
+    );
+  }
+
   return (
     <section>
-      <h2>Home</h2>
+      <div className="split">
+        <h2>Home</h2>
+        <label className="inline">
+          <input
+            type="checkbox"
+            checked={excludeHousing}
+            onChange={(e) => setExcludeHousing(e.target.checked)}
+          />
+          Exclude housing and mortgage
+        </label>
+      </div>
       <div className="grid two">
         <article className="card">
-          <h3>Spending by Family</h3>
+          <div className="analytics-card-head">
+            <h3>Spending by Family</h3>
+            {renderMonthNavigator()}
+          </div>
           <p className="category-editor-note">
-            Biggest current-month spending groups first.
+            Biggest spending groups for the selected month.
             {largestFamilySpend ? ` Top family: ${largestFamilySpend.family}.` : ''}
+            {excludeHousing ? ' Housing is excluded from this view.' : ''}
           </p>
           <div className={isMobile ? 'chart-scroll' : ''}>
             <ResponsiveContainer
@@ -199,7 +315,15 @@ export function DashboardPage() {
                   stroke="var(--fg)"
                   tick={{ fill: 'var(--fg)', fontSize: 12 }}
                 />
-                <Bar dataKey="amount" fill="var(--series-2)" radius={[8, 8, 8, 8]}>
+                <Bar
+                  dataKey="amount"
+                  fill="var(--series-2)"
+                  radius={[8, 8, 8, 8]}
+                  cursor="pointer"
+                  onClick={(data) => {
+                    if (data?.family) openFamilyTransactions(String(data.family));
+                  }}
+                >
                   <LabelList dataKey="amount" content={<SignedCurrencyLabel />} />
                 </Bar>
               </BarChart>
@@ -207,9 +331,13 @@ export function DashboardPage() {
           </div>
         </article>
         <article className="card">
-          <h3>Account Balance Bars</h3>
+          <div className="analytics-card-head">
+            <h3>Account Balance Bars</h3>
+            {renderMonthNavigator()}
+          </div>
           <p className="category-editor-note">
             Assets stay positive. Loans and credit accounts show as negative.
+            {excludeHousing ? ' Mortgage accounts are excluded from this view.' : ''}
           </p>
           <div className={isMobile ? 'chart-scroll' : ''}>
             <ResponsiveContainer
@@ -230,7 +358,14 @@ export function DashboardPage() {
                   stroke="var(--fg)"
                   tick={{ fill: 'var(--fg)', fontSize: 12 }}
                 />
-                <Bar dataKey="balance" radius={[8, 8, 8, 8]}>
+                <Bar
+                  dataKey="balance"
+                  radius={[8, 8, 8, 8]}
+                  cursor="pointer"
+                  onClick={(data) => {
+                    if (data?.account_id) openAccountTransactions(String(data.account_id));
+                  }}
+                >
                   <LabelList dataKey="balance" content={<SignedCurrencyLabel />} />
                   {accountBalanceBars.map((row) => (
                     <Cell
@@ -249,17 +384,21 @@ export function DashboardPage() {
           <div>
             <h3>Monthly Snapshot</h3>
             <p className="category-editor-note">
-              Current month totals with {includePending ? 'pending included' : 'posted only'}.
+              {monthRangeLabel} totals with {includePending ? 'pending included' : 'posted only'}.
+              {excludeHousing ? ' Housing spend is excluded from these totals.' : ''}
             </p>
           </div>
-          <label className="inline">
-            <input
-              type="checkbox"
-              checked={includePending}
-              onChange={(e) => setIncludePending(e.target.checked)}
-            />
-            Include pending
-          </label>
+          <div className="row-actions">
+            {renderMonthNavigator()}
+            <label className="inline">
+              <input
+                type="checkbox"
+                checked={includePending}
+                onChange={(e) => setIncludePending(e.target.checked)}
+              />
+              Include pending
+            </label>
+          </div>
         </div>
         <div className="grid four">
           <article className="card">

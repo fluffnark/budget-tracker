@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Bar,
   BarChart,
@@ -17,6 +18,7 @@ import type {
   BudgetMonthSnapshot,
   BudgetPeriodSnapshot
 } from '../types';
+import { buildTransactionsHref } from '../utils/transactionsLink';
 
 function monthInputValue(raw: string): string {
   return raw.slice(0, 7);
@@ -37,6 +39,7 @@ function fmtMoney(value: number): string {
 }
 
 export function BudgetPage() {
+  const navigate = useNavigate();
   const [monthValue, setMonthValue] = useState(new Date().toISOString().slice(0, 7));
   const [period, setPeriod] = useState<'weekly' | 'monthly' | 'yearly'>('monthly');
   const [periodSnapshot, setPeriodSnapshot] = useState<BudgetPeriodSnapshot | null>(null);
@@ -173,6 +176,19 @@ export function BudgetPage() {
     }
     return [...keys];
   }, [periodSnapshot]);
+
+  function openTransactionsForFamily(family: string, startDate?: string, endDate?: string) {
+    if (!startDate || !endDate) return;
+    navigate(
+      buildTransactionsHref({
+        start: startDate,
+        end: endDate,
+        includePending: true,
+        includeTransfers: false,
+        categoryFamily: family
+      })
+    );
+  }
 
   function updateRow(categoryId: number, patch: Partial<BudgetCategoryPlanRow>) {
     setRows((current) =>
@@ -372,7 +388,19 @@ export function BudgetPage() {
                         stroke="var(--fg)"
                         tick={{ fill: 'var(--fg)', fontSize: 12 }}
                       />
-                      <Bar dataKey="amount" fill="var(--series-2)" radius={[8, 8, 8, 8]}>
+                      <Bar
+                        dataKey="amount"
+                        fill="var(--series-2)"
+                        radius={[8, 8, 8, 8]}
+                        cursor="pointer"
+                        onClick={(data) =>
+                          openTransactionsForFamily(
+                            String(data?.family ?? ''),
+                            periodSnapshot?.start,
+                            periodSnapshot?.end
+                          )
+                        }
+                      >
                         <LabelList dataKey="amount" position="right" formatter={fmtCurrency} />
                       </Bar>
                     </BarChart>
@@ -391,6 +419,14 @@ export function BudgetPage() {
                           dataKey={`families.${family}`}
                           stackId="a"
                           fill={`var(--series-${(index % 5) + 1})`}
+                          cursor="pointer"
+                          onClick={(data) =>
+                            openTransactionsForFamily(
+                              family,
+                              String(data?.start ?? ''),
+                              String(data?.end ?? '')
+                            )
+                          }
                         />
                       ))}
                     </BarChart>
@@ -531,6 +567,48 @@ export function BudgetPage() {
                     )}
                   </div>
                 </article>
+                <article className="card">
+                  <h3>Early recurring review</h3>
+                  <p className="budget-caption">
+                    Likely subscriptions or bills that have started showing up but do not have enough history yet.
+                  </p>
+                  <div className="budget-period-list">
+                    {(recurringSnapshot?.review_candidates ?? []).map((item) => (
+                      <details key={`${item.label}-${item.last_posted_at}`} open>
+                        <summary>
+                          <div>
+                            <strong>{item.label}</strong>
+                            <small>
+                              {item.family_name} • {item.review_reason ?? item.cadence} • last {item.last_posted_at}
+                            </small>
+                          </div>
+                          <span>{fmtMoney(item.estimated_monthly_cost)}</span>
+                        </summary>
+                        <ul>
+                          <li>
+                            <span>Average charge</span>
+                            <strong>{fmtMoney(item.average_amount)}</strong>
+                          </li>
+                          <li>
+                            <span>Occurrences seen</span>
+                            <strong>{item.occurrences}</strong>
+                          </li>
+                          <li>
+                            <span>Category</span>
+                            <strong>{item.category_name}</strong>
+                          </li>
+                          <li>
+                            <span>Next expected</span>
+                            <strong>{item.next_expected_at ?? 'Need more history'}</strong>
+                          </li>
+                        </ul>
+                      </details>
+                    ))}
+                    {!(recurringSnapshot?.review_candidates.length) && (
+                      <p className="category-editor-note">No emerging recurring payments need review.</p>
+                    )}
+                  </div>
+                </article>
               </div>
             </div>
           )
@@ -647,10 +725,46 @@ export function BudgetPage() {
                       stroke="var(--fg)"
                       tick={{ fill: 'var(--fg)', fontSize: 12 }}
                     />
-                    <Bar dataKey="planned" fill="var(--primary)" radius={[8, 8, 8, 8]}>
+                    <Bar
+                      dataKey="planned"
+                      fill="var(--primary)"
+                      radius={[8, 8, 8, 8]}
+                      cursor="pointer"
+                      onClick={(data) =>
+                        openTransactionsForFamily(
+                          String(data?.family ?? ''),
+                          asMonthDate(monthValue),
+                          new Date(
+                            new Date(asMonthDate(monthValue)).getFullYear(),
+                            new Date(asMonthDate(monthValue)).getMonth() + 1,
+                            0
+                          )
+                            .toISOString()
+                            .slice(0, 10)
+                        )
+                      }
+                    >
                       <LabelList dataKey="planned" position="right" formatter={fmtCurrency} />
                     </Bar>
-                    <Bar dataKey="actual" fill="var(--series-4)" radius={[8, 8, 8, 8]}>
+                    <Bar
+                      dataKey="actual"
+                      fill="var(--series-4)"
+                      radius={[8, 8, 8, 8]}
+                      cursor="pointer"
+                      onClick={(data) =>
+                        openTransactionsForFamily(
+                          String(data?.family ?? ''),
+                          asMonthDate(monthValue),
+                          new Date(
+                            new Date(asMonthDate(monthValue)).getFullYear(),
+                            new Date(asMonthDate(monthValue)).getMonth() + 1,
+                            0
+                          )
+                            .toISOString()
+                            .slice(0, 10)
+                        )
+                      }
+                    >
                       <LabelList dataKey="actual" position="right" formatter={fmtCurrency} />
                     </Bar>
                   </BarChart>

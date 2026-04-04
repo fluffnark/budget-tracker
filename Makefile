@@ -1,4 +1,4 @@
-.PHONY: dev dev-backend dev-frontend dev-backend-fast dev-frontend-fast dev-local-backend dev-local-frontend db-up build stop test lint cleanup-accounts
+.PHONY: dev dev-backend dev-frontend dev-backend-fast dev-frontend-fast dev-local-backend dev-local-frontend db-up build stop test lint cleanup-accounts tailscale-service
 
 dev:
 	docker compose up --build
@@ -42,3 +42,6 @@ lint:
 
 cleanup-accounts:
 	docker compose run --rm --no-deps --build backend python scripts/cleanup_accounts.py --simplefin-only --deactivate-fixture-accounts --apply
+
+tailscale-service:
+	./scripts/configure_tailscale_service.sh

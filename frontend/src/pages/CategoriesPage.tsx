@@ -15,12 +15,31 @@ type CategoryDraft = {
   name: string;
   system_kind: string;
   parent_id: number | null;
+  spend_bucket: string;
   color: string;
   icon: string;
 };
 
 const SYSTEM_KINDS = ['expense', 'income', 'transfer', 'uncategorized'];
+const SPEND_BUCKETS = [
+  'essential',
+  'discretionary',
+  'savings',
+  'debt',
+  'income',
+  'transfer',
+  'uncategorized'
+];
 const DEFAULT_CATEGORY_COLOR = resolveThemeHex('--accent-clay');
+
+function spendBucketOptions(systemKind: string): string[] {
+  if (systemKind === 'income') return ['income'];
+  if (systemKind === 'transfer') return ['transfer'];
+  if (systemKind === 'uncategorized') return ['uncategorized'];
+  return SPEND_BUCKETS.filter((bucket) =>
+    ['essential', 'discretionary', 'savings', 'debt'].includes(bucket)
+  );
+}
 
 export function CategoriesPage() {
   const [categories, setCategories] = useState<Category[]>([]);
@@ -32,6 +51,7 @@ export function CategoriesPage() {
     name: '',
     system_kind: 'expense',
     parent_id: null,
+    spend_bucket: 'essential',
     color: DEFAULT_CATEGORY_COLOR,
     icon: '🏷️'
   });
@@ -69,6 +89,7 @@ export function CategoriesPage() {
       name: category.name,
       system_kind: category.system_kind,
       parent_id: category.parent_id ?? null,
+      spend_bucket: category.spend_bucket ?? 'essential',
       color: category.color ?? DEFAULT_CATEGORY_COLOR,
       icon: category.icon ?? ''
     });
@@ -94,6 +115,7 @@ export function CategoriesPage() {
           name: form.name.trim(),
           system_kind: form.system_kind,
           parent_id: form.parent_id,
+          spend_bucket: form.spend_bucket || null,
           color: form.color || null,
           icon: form.icon || null
         })
@@ -103,6 +125,7 @@ export function CategoriesPage() {
         name: '',
         system_kind: 'expense',
         parent_id: null,
+        spend_bucket: 'essential',
         color: DEFAULT_CATEGORY_COLOR,
         icon: '🏷️'
       });
@@ -122,6 +145,7 @@ export function CategoriesPage() {
           name: draft.name.trim(),
           system_kind: draft.system_kind,
           parent_id: draft.parent_id,
+          spend_bucket: draft.spend_bucket || null,
           color: draft.color || null,
           icon: draft.icon || null
         })
@@ -177,7 +201,11 @@ export function CategoriesPage() {
                 <select
                   value={form.system_kind}
                   onChange={(e) =>
-                    setForm({ ...form, system_kind: e.target.value })
+                    setForm({
+                      ...form,
+                      system_kind: e.target.value,
+                      spend_bucket: spendBucketOptions(e.target.value)[0] ?? 'essential'
+                    })
                   }
                 >
                   {SYSTEM_KINDS.map((kind) => (
@@ -195,6 +223,21 @@ export function CategoriesPage() {
                   onChange={(parent_id) => setForm({ ...form, parent_id })}
                   noneLabel="Top-level"
                 />
+              </label>
+              <label>
+                Spend bucket
+                <select
+                  value={form.spend_bucket}
+                  onChange={(e) =>
+                    setForm({ ...form, spend_bucket: e.target.value })
+                  }
+                >
+                  {spendBucketOptions(form.system_kind).map((bucket) => (
+                    <option key={bucket} value={bucket}>
+                      {bucket}
+                    </option>
+                  ))}
+                </select>
               </label>
               <label>
                 Color
@@ -254,7 +297,11 @@ export function CategoriesPage() {
                     <select
                       value={draft.system_kind}
                       onChange={(e) =>
-                        setDraft({ ...draft, system_kind: e.target.value })
+                        setDraft({
+                          ...draft,
+                          system_kind: e.target.value,
+                          spend_bucket: spendBucketOptions(e.target.value)[0] ?? 'essential'
+                        })
                       }
                     >
                       {SYSTEM_KINDS.map((kind) => (
@@ -275,6 +322,21 @@ export function CategoriesPage() {
                       noneLabel="Top-level"
                       disabledIds={blockedParentIds}
                     />
+                  </label>
+                  <label>
+                    Spend bucket
+                    <select
+                      value={draft.spend_bucket}
+                      onChange={(e) =>
+                        setDraft({ ...draft, spend_bucket: e.target.value })
+                      }
+                    >
+                      {spendBucketOptions(draft.system_kind).map((bucket) => (
+                        <option key={bucket} value={bucket}>
+                          {bucket}
+                        </option>
+                      ))}
+                    </select>
                   </label>
                   <label>
                     Color
@@ -365,6 +427,9 @@ function CategoryTree({
               <span>{node.category.icon ? `${node.category.icon} ` : ''}</span>
               <strong>{node.category.name}</strong>
               <span className="badge">{node.category.system_kind}</span>
+              {node.category.spend_bucket && (
+                <span className="badge">{node.category.spend_bucket}</span>
+              )}
               <div className="row-actions">
                 <button
                   type="button"

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyTransactionFilters } from './transactionFilters';
+import {
+  applyTransactionFilters,
+  scoreTransactionSearch
+} from './transactionFilters';
 
 const txns = [
   {
@@ -38,6 +41,24 @@ const txns = [
     merchant_name: null,
     transfer_id: null,
     notes: null
+  },
+  {
+    id: '3',
+    account_id: 'a3',
+    account_name: 'Savings',
+    account_type: 'savings',
+    posted_at: '2026-02-22T00:00:00+00:00',
+    amount: -75,
+    currency: 'USD',
+    description_raw: 'Whole Foods Market',
+    description_norm: 'WHOLE FOODS MARKET',
+    is_pending: false,
+    category_id: 3,
+    category_name: 'Groceries',
+    merchant_id: 9,
+    merchant_name: 'Whole Foods',
+    transfer_id: null,
+    notes: 'Weekly grocery run'
   }
 ];
 
@@ -54,5 +75,64 @@ describe('applyTransactionFilters', () => {
 
     expect(filtered).toHaveLength(1);
     expect(filtered[0].id).toBe('1');
+  });
+
+  it('matches similar spellings and category keywords', () => {
+    const fuzzy = applyTransactionFilters(txns as any, {
+      q: 'cofee',
+      accountId: '',
+      categoryId: '',
+      minAmount: '',
+      maxAmount: '',
+      includePending: true
+    });
+    const category = applyTransactionFilters(txns as any, {
+      q: 'grocery',
+      accountId: '',
+      categoryId: '',
+      minAmount: '',
+      maxAmount: '',
+      includePending: true
+    });
+
+    expect(fuzzy[0].id).toBe('1');
+    expect(category[0].id).toBe('3');
+  });
+
+  it('scores direct description matches above weaker account matches', () => {
+    expect(scoreTransactionSearch(txns[0] as any, 'coffee')).toBeGreaterThan(
+      scoreTransactionSearch(txns[0] as any, 'checking')
+    );
+  });
+
+  it('supports exact phrase matching with quotes', () => {
+    const exact = applyTransactionFilters(txns as any, {
+      q: '"coffee shop"',
+      accountId: '',
+      categoryId: '',
+      minAmount: '',
+      maxAmount: '',
+      includePending: true
+    });
+    const mixed = applyTransactionFilters(txns as any, {
+      q: '"whole foods" grocery',
+      accountId: '',
+      categoryId: '',
+      minAmount: '',
+      maxAmount: '',
+      includePending: true
+    });
+    const miss = applyTransactionFilters(txns as any, {
+      q: '"coffee market"',
+      accountId: '',
+      categoryId: '',
+      minAmount: '',
+      maxAmount: '',
+      includePending: true
+    });
+
+    expect(exact.map((txn: any) => txn.id)).toEqual(['1']);
+    expect(mixed.map((txn: any) => txn.id)).toEqual(['3']);
+    expect(miss).toHaveLength(0);
   });
 });

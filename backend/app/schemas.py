@@ -162,8 +162,12 @@ class CategorizationValidateLLMRequest(BaseModel):
 
 class CategorizationValidateLLMResponse(BaseModel):
     unknown_transaction_ids: list[str]
+    unknown_transaction_count: int
     ambiguous_transaction_ids: list[str]
+    ambiguous_transaction_count: int
     invalid_category_ids: list[int]
+    invalid_category_count: int
+    blank_transaction_id_count: int
 
 
 class TransactionPatchRequest(BaseModel):
@@ -275,6 +279,7 @@ class CategoryResponse(BaseModel):
     parent_id: int | None
     name: str
     system_kind: str
+    spend_bucket: str | None = None
     color: str | None = None
     icon: str | None = None
 
@@ -283,6 +288,10 @@ class CategoryCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     system_kind: str = Field(pattern="^(income|expense|transfer|uncategorized)$")
     parent_id: int | None = None
+    spend_bucket: str | None = Field(
+        default=None,
+        pattern="^(essential|discretionary|savings|debt|income|transfer|uncategorized)$",
+    )
     color: str | None = Field(default=None, max_length=20)
     icon: str | None = Field(default=None, max_length=50)
 
@@ -293,6 +302,10 @@ class CategoryPatchRequest(BaseModel):
         default=None, pattern="^(income|expense|transfer|uncategorized)$"
     )
     parent_id: int | None = None
+    spend_bucket: str | None = Field(
+        default=None,
+        pattern="^(essential|discretionary|savings|debt|income|transfer|uncategorized)$",
+    )
     color: str | None = Field(default=None, max_length=20)
     icon: str | None = Field(default=None, max_length=50)
 

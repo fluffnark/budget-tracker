@@ -94,6 +94,10 @@ describe('TransactionsPage rule feedback', () => {
     );
 
     await waitFor(() => {
+      expect(screen.getByTitle(/Expand Transactions/i)).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTitle(/Expand Transactions/i));
+    await waitFor(() => {
       expect(screen.getByText('GAS STATION')).toBeInTheDocument();
     });
     fireEvent.click(screen.getByRole('button', { name: 'Create rule' }));

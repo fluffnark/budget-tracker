@@ -21,6 +21,7 @@ import type {
   Transaction
 } from '../types';
 import { buildCategoryPathMap } from '../utils/categories';
+import { scoreTransactionSearch } from '../utils/transactionFilters';
 
 type SankeyData = {
   nodes: {
@@ -41,6 +42,7 @@ function defaultFilters(): FilterState {
     preset: 'last_3_months',
     start: range.start,
     end: range.end,
+    q: '',
     account_ids: [],
     account_id: '',
     category_id: null,
@@ -56,6 +58,7 @@ function parseFilters(searchParams: URLSearchParams): FilterState | null {
     'preset',
     'start',
     'end',
+    'q',
     'accounts',
     'account_id',
     'category_id',
@@ -74,6 +77,7 @@ function parseFilters(searchParams: URLSearchParams): FilterState | null {
     preset,
     start: searchParams.get('start') ?? base.start,
     end: searchParams.get('end') ?? base.end,
+    q: searchParams.get('q') ?? '',
     account_ids: (searchParams.get('accounts') ?? '')
       .split(',')
       .map((id) => id.trim())
@@ -92,6 +96,7 @@ function serializeFilters(filters: FilterState): URLSearchParams {
   params.set('preset', filters.preset);
   params.set('start', filters.start);
   params.set('end', filters.end);
+  if (filters.q.trim()) params.set('q', filters.q.trim());
   if (filters.account_ids.length)
     params.set('accounts', filters.account_ids.join(','));
   if (filters.account_id) params.set('account_id', filters.account_id);
@@ -120,6 +125,8 @@ type ParsedLLMRule = {
   priority?: number;
   reason?: string;
 };
+
+type LLMPromptMode = 'high_precision' | 'high_coverage';
 
 const ALLOWED_RULE_MATCH_TYPES = new Set([
   'contains',
@@ -170,6 +177,35 @@ function resolveParsedAssignments(assignments: ParsedLLMAssignment[]) {
   }));
 }
 
+function extractTransactionKeywords(transaction: Transaction): string[] {
+  const source = `${transaction.description_norm} ${transaction.merchant_name ?? ''} ${
+    transaction.notes ?? ''
+  }`;
+  const tokens = source
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3)
+    .filter(
+      (token) =>
+        !new Set([
+          'the',
+          'and',
+          'from',
+          'with',
+          'for',
+          'payment',
+          'purchase',
+          'debit',
+          'credit',
+          'card',
+          'check'
+        ]).has(token)
+    );
+
+  return Array.from(new Set(tokens)).slice(0, 5);
+}
+
 export function CategorizePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [filters, setFilters] = useState<FilterState>(defaultFilters());
@@ -197,12 +233,18 @@ export function CategorizePage() {
   const [importingLlm, setImportingLlm] = useState(false);
   const [creatingRulesFromLlm, setCreatingRulesFromLlm] = useState(true);
   const [exportingLlmPayload, setExportingLlmPayload] = useState(false);
+  const [llmPromptMode, setLlmPromptMode] =
+    useState<LLMPromptMode>('high_precision');
   const [llmPreflight, setLlmPreflight] = useState<{
     assignmentCount: number;
     ruleCount: number;
     unknownTransactionIds: string[];
+    unknownTransactionCount: number;
     ambiguousTransactionIds: string[];
+    ambiguousTransactionCount: number;
     invalidCategoryIds: number[];
+    invalidCategoryCount: number;
+    blankTransactionIdCount: number;
     invalidRuleMatchTypes: string[];
     blankRuleIndexes: number[];
     duplicateTransactionIds: string[];
@@ -344,15 +386,18 @@ export function CategorizePage() {
 
   const visibleTransactions = useMemo(() => {
     const excludedAccounts = new Set(filters.account_ids);
-    return transactions.filter((txn) => {
-      if (filters.account_id && txn.account_id !== filters.account_id) return false;
-      if (excludedAccounts.has(txn.account_id)) return false;
+    const query = filters.q.trim();
+    const matches: { txn: Transaction; score: number }[] = [];
+
+    transactions.forEach((txn) => {
+      if (filters.account_id && txn.account_id !== filters.account_id) return;
+      if (excludedAccounts.has(txn.account_id)) return;
       if (
         filters.uncategorized_only &&
         txn.category_id !== null &&
         !uncategorizedCategoryIds.has(txn.category_id)
       ) {
-        return false;
+        return;
       }
       const path =
         txn.category_id !== null
@@ -363,14 +408,49 @@ export function CategorizePage() {
         !path.startsWith(`${filters.category_family} >`) &&
         path !== filters.category_family
       ) {
-        return false;
+        return;
       }
-      if (filters.category_id && txn.category_id !== filters.category_id)
-        return false;
-      return true;
+      if (filters.category_id && txn.category_id !== filters.category_id) {
+        return;
+      }
+
+      const searchScore = query ? scoreTransactionSearch(txn, query) : 0;
+      const categoryPathScore =
+        query && path
+          ? scoreTransactionSearch(
+              {
+                ...txn,
+                description_raw: path,
+                description_norm: path,
+                category_name: path
+              },
+              query
+            )
+          : 0;
+      const score = Math.max(searchScore, categoryPathScore);
+      if (query && score <= 0) {
+        return;
+      }
+
+      matches.push({ txn, score });
     });
+
+    if (!query) {
+      return matches.map((entry) => entry.txn);
+    }
+
+    return matches
+      .sort((left, right) => {
+        if (right.score !== left.score) return right.score - left.score;
+        return (
+          new Date(right.txn.posted_at).getTime() -
+          new Date(left.txn.posted_at).getTime()
+        );
+      })
+      .map((entry) => entry.txn);
   }, [
     transactions,
+    filters.q,
     filters.account_ids,
     filters.account_id,
     filters.uncategorized_only,
@@ -404,7 +484,7 @@ export function CategorizePage() {
 
   useEffect(() => {
     setTablePage(1);
-  }, [tableRowsPerPage, filters.start, filters.end, filters.include_pending, filters.include_transfers, filters.category_id, filters.account_ids, filters.account_id, filters.uncategorized_only]);
+  }, [tableRowsPerPage, filters.start, filters.end, filters.q, filters.include_pending, filters.include_transfers, filters.category_id, filters.account_ids, filters.account_id, filters.uncategorized_only]);
   
   useEffect(() => {
     setTablePage(1);
@@ -482,6 +562,38 @@ export function CategorizePage() {
         .filter((txn) => txn.amount < 0)
         .reduce((sum, txn) => sum + Math.abs(txn.amount), 0),
     [visibleTransactions]
+  );
+  const spendTransactions = useMemo(
+    () => visibleTransactions.filter((txn) => txn.amount < 0),
+    [visibleTransactions]
+  );
+  const totalInflow = useMemo(
+    () =>
+      visibleTransactions
+        .filter((txn) => txn.amount > 0)
+        .reduce((sum, txn) => sum + txn.amount, 0),
+    [visibleTransactions]
+  );
+  const avgSpendPerTransaction = useMemo(
+    () =>
+      spendTransactions.length > 0
+        ? totalOutflow / spendTransactions.length
+        : 0,
+    [spendTransactions, totalOutflow]
+  );
+  const avgSpendPerDay = useMemo(() => {
+    if (!filters.start || !filters.end) return 0;
+    const startDate = new Date(`${filters.start}T00:00:00`);
+    const endDate = new Date(`${filters.end}T00:00:00`);
+    const dayCount = Math.max(
+      1,
+      Math.round((endDate.getTime() - startDate.getTime()) / 86400000) + 1
+    );
+    return totalOutflow / dayCount;
+  }, [filters.start, filters.end, totalOutflow]);
+  const netFlow = useMemo(
+    () => totalInflow - totalOutflow,
+    [totalInflow, totalOutflow]
   );
   const topCategories = useMemo(() => pieData.slice(0, 3), [pieData]);
   const accounts = useMemo(() => {
@@ -723,8 +835,12 @@ export function CategorizePage() {
 
     const validation = await apiFetch<{
       unknown_transaction_ids: string[];
+      unknown_transaction_count: number;
       ambiguous_transaction_ids: string[];
+      ambiguous_transaction_count: number;
       invalid_category_ids: number[];
+      invalid_category_count: number;
+      blank_transaction_id_count: number;
     }>('/api/categorization/validate_llm', {
       method: 'POST',
       body: JSON.stringify({
@@ -743,8 +859,12 @@ export function CategorizePage() {
       assignmentCount: assignments.length,
       ruleCount: proposedRules.length,
       unknownTransactionIds: validation.unknown_transaction_ids.slice(0, 20),
+      unknownTransactionCount: validation.unknown_transaction_count,
       ambiguousTransactionIds: validation.ambiguous_transaction_ids.slice(0, 20),
+      ambiguousTransactionCount: validation.ambiguous_transaction_count,
       invalidCategoryIds: validation.invalid_category_ids,
+      invalidCategoryCount: validation.invalid_category_count,
+      blankTransactionIdCount: validation.blank_transaction_id_count,
       invalidRuleMatchTypes,
       blankRuleIndexes: blankRuleIndexes.slice(0, 20),
       duplicateTransactionIds: duplicateTransactionIds.slice(0, 20),
@@ -774,7 +894,7 @@ export function CategorizePage() {
       system_kind: string;
       parent_id: number | null;
     }>;
-  }) {
+  }, mode: LLMPromptMode = 'high_precision') {
     const categoriesCompact = (payload.categories ?? []).map((category) => ({
       id: category.id,
       path: category.full_path,
@@ -917,10 +1037,17 @@ export function CategorizePage() {
       'Categorize only `review_transactions` using only category IDs from `categories`.',
       'Use each provided `transaction_id` exactly as shown, even when abbreviated.',
       'Prefer `merchant_reference` first, then `pattern_reference`, then the transaction text itself.',
-      'Skip uncertain transactions instead of guessing.',
+      mode === 'high_precision'
+        ? 'Skip uncertain transactions instead of guessing.'
+        : 'Maximize coverage across `review_transactions`, but still skip rows that would require guessing or invented facts.',
       'Use transfer categories 46/47 only for true transfers, card payments, or account moves.',
       'At most one assignment per transaction_id.',
-      'Create rules only for repeated, specific merchant/pattern signals; avoid broad words like PAYMENT, TRANSFER, PURCHASE.',
+      mode === 'high_precision'
+        ? 'Create rules only for repeated, specific merchant/pattern signals; avoid broad words like PAYMENT, TRANSFER, PURCHASE.'
+        : 'When `merchant_reference` is absent, use repeated text patterns and transaction context aggressively before leaving a row unassigned. Do not use uncategorized as a fallback.',
+      mode === 'high_precision'
+        ? 'Prefer fewer, higher-confidence assignments over broad coverage.'
+        : 'High coverage mode: aim to categorize as many `review_transactions` as possible without inventing transaction IDs, categories, merchants, or transfer intent.',
       'Keep reasons very short.',
       'Output shape: {"proposed_assignments":[{"transaction_id":"...","category_id":123,"reason":"..."}],"proposed_rules":[{"match_type":"contains|regex|merchant|account","pattern":"...","category_id":123,"priority":800,"reason":"..."}]}.'
     ].join('\n');
@@ -954,7 +1081,7 @@ export function CategorizePage() {
     const { prompt, compactPayload } = buildCompactCategorizationPromptPack({
       transactions: transactionEntries,
       categories: categoryEntries
-    });
+    }, llmPromptMode);
     const text = `${prompt}\n\n${JSON.stringify(compactPayload)}`;
     return {
       reviewCount: compactPayload.review_transactions.length,
@@ -963,7 +1090,7 @@ export function CategorizePage() {
       chars: text.length,
       approxTokens: Math.ceil(text.length / 4)
     };
-  }, [categories, pathMap, transactions]);
+  }, [categories, llmPromptMode, pathMap, transactions]);
 
   async function exportLLMPayload() {
     setExportingLlmPayload(true);
@@ -1006,7 +1133,10 @@ export function CategorizePage() {
           } & Record<string, unknown>
         >;
       };
-      const { prompt, compactPayload } = buildCompactCategorizationPromptPack(payload);
+      const { prompt, compactPayload } = buildCompactCategorizationPromptPack(
+        payload,
+        llmPromptMode
+      );
 
       const text = `${prompt}
 
@@ -1058,6 +1188,11 @@ ${JSON.stringify(compactPayload, null, 2)}
           `Invalid category IDs: ${preflight.invalidCategoryIds.join(', ')}`
         );
       }
+      if (preflight.blankTransactionIdCount > 0) {
+        throw new Error(
+          `Assignments with blank transaction IDs: ${preflight.blankTransactionIdCount}`
+        );
+      }
       if (preflight.invalidRuleMatchTypes.length > 0) {
         throw new Error(
           `Invalid rule match types: ${preflight.invalidRuleMatchTypes.join(', ')}`
@@ -1068,7 +1203,7 @@ ${JSON.stringify(compactPayload, null, 2)}
           `Rules with blank patterns at indexes: ${preflight.blankRuleIndexes.join(', ')}`
         );
       }
-      if (preflight.ambiguousTransactionIds.length > 0) {
+      if (preflight.ambiguousTransactionCount > 0) {
         throw new Error(
           `Ambiguous transaction IDs: ${preflight.ambiguousTransactionIds.join(', ')}`
         );
@@ -1080,9 +1215,9 @@ ${JSON.stringify(compactPayload, null, 2)}
           )}`
         );
       }
-      if (preflight.unknownTransactionIds.length > 0) {
+      if (preflight.unknownTransactionCount > 0) {
         const proceed = window.confirm(
-          `LLM output includes ${preflight.unknownTransactionIds.length} unknown transaction IDs. Continue and skip them?`
+          `LLM output includes ${preflight.unknownTransactionCount} unknown transaction IDs. Continue and skip them?`
         );
         if (!proceed) return;
       }
@@ -1218,6 +1353,26 @@ ${JSON.stringify(compactPayload, null, 2)}
             label: `Transactions (${visibleTransactions.length})`,
             content: (
               <>
+                <div className="studio-metrics-inline">
+                  <article className="studio-metric-pill">
+                    <span className="studio-metric-label">Total spent</span>
+                    <strong className="studio-metric-value">
+                      ${totalOutflow.toFixed(2)}
+                    </strong>
+                  </article>
+                  <article className="studio-metric-pill">
+                    <span className="studio-metric-label">Avg spend</span>
+                    <strong className="studio-metric-value">
+                      ${avgSpendPerTransaction.toFixed(2)}
+                    </strong>
+                  </article>
+                  <article className="studio-metric-pill">
+                    <span className="studio-metric-label">Avg spend / day</span>
+                    <strong className="studio-metric-value">
+                      ${avgSpendPerDay.toFixed(2)}
+                    </strong>
+                  </article>
+                </div>
                 <table className="table dense" data-testid="categorize-layout">
                   <thead>
                     <tr>
@@ -1298,24 +1453,57 @@ ${JSON.stringify(compactPayload, null, 2)}
           },
           {
             id: 'studio-summary',
-            label: 'Summary KPIs',
+            label: 'Spending Context',
+            defaultCollapsed: true,
             content: (
-              <div className="grid two">
-                <article className="card">
-                  <h3>Total outflow</h3>
-                  <p className="big">${totalOutflow.toFixed(2)}</p>
-                </article>
-                <article className="card">
-                  <h3>Uncategorized</h3>
-                  <p className="big">{uncategorizedCount}</p>
-                  <ul>
-                    {topCategories.map((item) => (
-                      <li key={item.category}>
-                        {item.category}: ${item.amount.toFixed(2)}
+              <div className="studio-metrics-wrap">
+                <div className="studio-metrics-bar">
+                  <article className="studio-metric-card">
+                    <span className="studio-metric-label">Spend txns</span>
+                    <strong className="studio-metric-value">
+                      {spendTransactions.length}
+                    </strong>
+                  </article>
+                  <article className="studio-metric-card">
+                    <span className="studio-metric-label">Net flow</span>
+                    <strong
+                      className={`studio-metric-value ${
+                        netFlow < 0 ? 'negative' : 'positive'
+                      }`}
+                    >
+                      ${netFlow.toFixed(2)}
+                    </strong>
+                  </article>
+                  <article className="studio-metric-card">
+                    <span className="studio-metric-label">Uncategorized</span>
+                    <strong className="studio-metric-value">
+                      {uncategorizedCount}
+                    </strong>
+                  </article>
+                </div>
+                <div className="grid two">
+                  <article className="card">
+                    <h3>Top spending categories</h3>
+                    <ul>
+                      {topCategories.map((item) => (
+                        <li key={item.category}>
+                          {item.category}: ${item.amount.toFixed(2)}
+                        </li>
+                      ))}
+                    </ul>
+                  </article>
+                  <article className="card">
+                    <h3>Flow snapshot</h3>
+                    <ul>
+                      <li>Total inflow: ${totalInflow.toFixed(2)}</li>
+                      <li>Total outflow: ${totalOutflow.toFixed(2)}</li>
+                      <li>
+                        Search + filter scope: {visibleTransactions.length}{' '}
+                        transactions
                       </li>
-                    ))}
-                  </ul>
-                </article>
+                    </ul>
+                  </article>
+                </div>
               </div>
             )
           },
@@ -1448,11 +1636,27 @@ ${JSON.stringify(compactPayload, null, 2)}
                     : 'Copy compact LLM payload'}
                 </button>
                 <p className="category-editor-note">
-                  Approx size: {llmPayloadEstimate.approxTokens.toLocaleString()} tokens /{' '}
+                  Prompt mode:{' '}
+                  {llmPromptMode === 'high_precision'
+                    ? 'high precision'
+                    : 'high coverage'}
+                  . Approx size: {llmPayloadEstimate.approxTokens.toLocaleString()} tokens /{' '}
                   {llmPayloadEstimate.chars.toLocaleString()} chars.
                   {` ${llmPayloadEstimate.reviewCount} review rows, ${llmPayloadEstimate.merchantRefCount} merchant refs, ${llmPayloadEstimate.patternRefCount} pattern refs.`}
                 </p>
               </div>
+              <label>
+                Prompt mode
+                <select
+                  value={llmPromptMode}
+                  onChange={(e) =>
+                    setLlmPromptMode(e.target.value as LLMPromptMode)
+                  }
+                >
+                  <option value="high_precision">High precision</option>
+                  <option value="high_coverage">High coverage</option>
+                </select>
+              </label>
               <label className="inline">
                 <input
                   type="checkbox"
@@ -1511,13 +1715,16 @@ ${JSON.stringify(compactPayload, null, 2)}
                   </span>
                 </div>
                 <p className="category-editor-note">
-                  Unknown transaction IDs: {llmPreflight.unknownTransactionIds.length}
+                  Unknown transaction IDs: {llmPreflight.unknownTransactionCount}
                 </p>
                 <p className="category-editor-note">
-                  Ambiguous transaction IDs: {llmPreflight.ambiguousTransactionIds.length}
+                  Ambiguous transaction IDs: {llmPreflight.ambiguousTransactionCount}
                 </p>
                 <p className="category-editor-note">
-                  Invalid category IDs: {llmPreflight.invalidCategoryIds.length}
+                  Invalid category IDs: {llmPreflight.invalidCategoryCount}
+                </p>
+                <p className="category-editor-note">
+                  Blank transaction IDs: {llmPreflight.blankTransactionIdCount}
                 </p>
                 <p className="category-editor-note">
                   Invalid rule match types: {llmPreflight.invalidRuleMatchTypes.length}
@@ -1575,10 +1782,25 @@ ${JSON.stringify(compactPayload, null, 2)}
                     <td>
                       {(() => {
                         const txn = transactionsById.get(item.transaction_id);
-                        if (!txn) return `Transaction ${item.transaction_id.slice(0, 8)}`;
-                        return `${txn.posted_at.slice(0, 10)} · ${txn.description_norm} · ${
-                          txn.account_name
-                        } · ${txn.amount.toFixed(2)}`;
+                        if (!txn) return 'Transaction details unavailable';
+                        const keywords = extractTransactionKeywords(txn);
+                        return (
+                          <>
+                            <div>
+                              {txn.posted_at.slice(0, 10)} · {txn.description_norm} ·{' '}
+                              {txn.account_name} · {txn.amount.toFixed(2)}
+                            </div>
+                            {!!keywords.length && (
+                              <div className="review-keywords">
+                                {keywords.map((keyword) => (
+                                  <span key={keyword} className="review-keyword-chip">
+                                    {keyword}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </>
+                        );
                       })()}
                     </td>
                     <td>{item.category_path}</td>

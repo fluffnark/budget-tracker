@@ -19,6 +19,7 @@ import { CategoryWaffleChart } from '../components/CategoryWaffleChart';
 import { ExpandableChart } from '../components/ExpandableChart';
 import type { Category } from '../types';
 import { buildCategoryPathMap } from '../utils/categories';
+import { buildCategoryColorResolver } from '../utils/categoryColors';
 import { buildTransactionsHref } from '../utils/transactionsLink';
 
 type WeeklyData = {
@@ -128,23 +129,10 @@ export function ReportsPage() {
         .slice(0, 10),
     [monthly]
   );
-  const barColor = (category: string, index: number) => {
-    const palette = [
-      'var(--series-1)',
-      'var(--series-2)',
-      'var(--series-3)',
-      'var(--series-4)',
-      'var(--series-5)'
-    ];
-    let hash = 0;
-    for (let i = 0; i < category.length; i += 1) {
-      hash = (hash * 31 + category.charCodeAt(i)) >>> 0;
-    }
-    const palettePick = palette[hash % palette.length];
-    if (index < palette.length * 2) return palettePick;
-    const hue = hash % 360;
-    return `hsl(${hue} 62% 52%)`;
-  };
+  const getCategoryColor = useMemo(
+    () => buildCategoryColorResolver(categories),
+    [categories]
+  );
 
   function openTransactionsForCategory(categoryLabel: string, start: string, end: string) {
     const categoryId = categoryIdsByLabel.get(categoryLabel);
@@ -266,6 +254,7 @@ export function ReportsPage() {
               items={weekly.top_categories}
               maxLegendItems={5}
               caption="Each square represents about 1% of this week’s spending, excluding transfers."
+              getCategoryColor={getCategoryColor}
               onLegendClick={(category) =>
                 openTransactionsForCategory(category, weeklyStartDate, todayIso)
               }
@@ -330,7 +319,7 @@ export function ReportsPage() {
                       {categoryBarData.map((entry, idx) => (
                         <Cell
                           key={`${entry.category}-${idx}`}
-                          fill={barColor(entry.category, idx)}
+                          fill={getCategoryColor(entry.category, idx)}
                         />
                       ))}
                     </Bar>
@@ -398,6 +387,7 @@ export function ReportsPage() {
             <CategoryWaffleChart
               items={monthly.category_breakdown}
               caption="Each square represents about 1% of monthly spending, excluding transfers."
+              getCategoryColor={getCategoryColor}
               onLegendClick={(category) =>
                 openTransactionsForCategory(category, monthStart, monthEnd)
               }

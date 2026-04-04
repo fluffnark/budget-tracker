@@ -4,7 +4,6 @@ import { CategoriesPage } from '../pages/CategoriesPage';
 import { CategorizePage } from '../pages/CategorizePage';
 import { DashboardPage } from '../pages/DashboardPage';
 import { ExportPage } from '../pages/ExportPage';
-import { ReportsPage } from '../pages/ReportsPage';
 import { RulesPage } from '../pages/RulesPage';
 import { SettingsPage } from '../pages/SettingsPage';
 
@@ -45,18 +44,10 @@ export const WORKSPACE_SECTIONS: WorkspaceSection[] = [
     render: () => <BudgetPage />
   },
   {
-    id: 'reports',
-    label: 'Reports',
-    shortLabel: 'Reports',
-    description: 'Weekly, monthly, and yearly performance with deltas.',
-    group: 'insights',
-    render: () => <ReportsPage />
-  },
-  {
     id: 'analytics',
-    label: 'Analytics',
-    shortLabel: 'Studio',
-    description: 'Explore flows, category mix, and projection scenarios.',
+    label: 'Insights',
+    shortLabel: 'Insights',
+    description: 'Reports, merchant history, cash flow, and projection tools in one place.',
     group: 'insights',
     render: () => <AnalyticsPage />
   },
@@ -106,10 +97,13 @@ export const PRIMARY_MOBILE_SECTION_IDS = [
   'dashboard',
   'budget',
   'transactions',
-  'reports'
+  'analytics'
 ];
 
 export function getWorkspaceSection(id: string | null | undefined) {
+  if (id === 'reports') {
+    return WORKSPACE_SECTIONS.find((section) => section.id === 'analytics') ?? WORKSPACE_SECTIONS[0];
+  }
   if (!id) return WORKSPACE_SECTIONS[0];
   return (
     WORKSPACE_SECTIONS.find((section) => section.id === id) ??

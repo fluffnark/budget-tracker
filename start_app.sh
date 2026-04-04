@@ -20,9 +20,12 @@ if [[ $# -gt 0 ]]; then
     --local)
       MODE="local"
       ;;
+    --tailscale)
+      MODE="tailscale"
+      ;;
     *)
       echo "Unknown mode: $1"
-      echo "Usage: ./start_app.sh [--docker|--docker-fast|--local]"
+      echo "Usage: ./start_app.sh [--docker|--docker-fast|--local|--tailscale]"
       exit 1
       ;;
   esac
@@ -143,13 +146,21 @@ elif [[ "$MODE" == "docker-fast" ]]; then
 elif [[ "$MODE" == "local" ]]; then
   make db-up
   start_app_session "make dev-local-backend" "make dev-local-frontend" "BACKEND_PORT=${SELECTED_BACKEND_PORT} FRONTEND_PORT=${SELECTED_FRONTEND_PORT} DB_PORT=$(get_env_value "DB_PORT" "5432") VITE_PROXY_TARGET=http://127.0.0.1:${SELECTED_BACKEND_PORT}"
+elif [[ "$MODE" == "tailscale" ]]; then
+  BACKEND_PORT="${SELECTED_BACKEND_PORT}" FRONTEND_PORT="${SELECTED_FRONTEND_PORT}" FRONTEND_BIND_IP=127.0.0.1 VITE_PROXY_TARGET=http://backend:8000 VITE_BASE_PATH=/ VITE_ROUTER_BASENAME= VITE_ALLOWED_HOSTS=budget.great-kettle.ts.net,127.0.0.1,localhost make build
+  start_app_session "make dev-backend" "make dev-frontend" "BACKEND_PORT=${SELECTED_BACKEND_PORT} FRONTEND_PORT=${SELECTED_FRONTEND_PORT} FRONTEND_BIND_IP=127.0.0.1 VITE_PROXY_TARGET=http://backend:8000 VITE_BASE_PATH=/ VITE_ROUTER_BASENAME= VITE_ALLOWED_HOSTS=budget.great-kettle.ts.net,127.0.0.1,localhost"
 fi
 
 echo "Started tmux session: ${APP_SESSION}"
 echo "  Mode: ${MODE}"
 echo "  Pane 0: backend on port ${SELECTED_BACKEND_PORT}"
 echo "  Pane 1: frontend on port ${SELECTED_FRONTEND_PORT}"
-echo "  Frontend URL: http://harmony.local:${SELECTED_FRONTEND_PORT}/"
+if [[ "$MODE" == "tailscale" ]]; then
+  echo "  Frontend URL: http://127.0.0.1:${SELECTED_FRONTEND_PORT}/"
+  echo "  Tailscale Service URL: https://budget.great-kettle.ts.net/ (after advertisement + approval)"
+else
+  echo "  Frontend URL: http://harmony.local:${SELECTED_FRONTEND_PORT}/"
+fi
 echo
 echo "Attach with:"
 echo "  tmux attach -t ${APP_SESSION}"

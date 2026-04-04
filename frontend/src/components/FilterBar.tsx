@@ -15,6 +15,7 @@ export type FilterState = {
   preset: PeriodPreset;
   start: string;
   end: string;
+  q: string;
   account_ids: string[];
   account_id?: string;
   category_id: number | null;
@@ -155,6 +156,16 @@ export function FilterBar({
         )}
 
         <label>
+          Search
+          <input
+            placeholder="Keyword, merchant, category, or similar text"
+            value={value.q}
+            disabled={disabled}
+            onChange={(e) => update({ q: e.target.value })}
+          />
+        </label>
+
+        <label>
           Category
           <CategorySelector
             categories={categories}
@@ -210,7 +221,7 @@ export function FilterBar({
           className="secondary"
           onClick={onReset}
           disabled={disabled}
-          title="Reset date range, category, toggles, and account subset to default values"
+          title="Reset date range, search, category, toggles, and account subset to default values"
         >
           Reset to defaults
         </button>

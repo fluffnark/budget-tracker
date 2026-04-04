@@ -45,7 +45,7 @@ KEYWORD_RULES: list[tuple[list[str], list[str], int | None, float, str]] = [
         "keyword_utilities_internet",
     ),
     (
-        ["VERIZON", "AT&T", "TMOBILE", "T-MOBILE", "MOBILE"],
+        ["VERIZON", "AT&T", "TMOBILE", "T-MOBILE"],
         ["Utilities/Mobile", "Utilities"],
         -1,
         0.9,
@@ -66,7 +66,17 @@ KEYWORD_RULES: list[tuple[list[str], list[str], int | None, float, str]] = [
         "keyword_fuel",
     ),
     (
-        ["STARBUCKS", "MCDONALD", "DOORDASH", "GRUBHUB", "CHIPOTLE", "SUBWAY"],
+        [
+            "STARBUCKS",
+            "MCDONALD",
+            "DOORDASH",
+            "GRUBHUB",
+            "CHIPOTLE",
+            "SUBWAY",
+            "COFFEE",
+            "CAFE",
+            "ESPRESSO",
+        ],
         ["Dining", "Food"],
         -1,
         0.89,
@@ -95,6 +105,7 @@ KEYWORD_RULES: list[tuple[list[str], list[str], int | None, float, str]] = [
     ),
 ]
 TRANSFER_HINT_TOKENS = [
+    "BANKING WITHDRAWAL TRANSFER TO",
     "TRANSFER",
     "XFER",
     "ACH",
@@ -106,6 +117,7 @@ TRANSFER_HINT_TOKENS = [
     "ZELLE",
     "WEALTHFRONT",
     "VANGUARD",
+    "RETIREMENT",
 ]
 
 

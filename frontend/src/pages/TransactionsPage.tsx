@@ -73,7 +73,6 @@ export function TransactionsPage() {
     });
     if (start) params.set('start', start);
     if (end) params.set('end', end);
-    if (filters.q.trim()) params.set('q', filters.q.trim());
     if (filters.accountId) params.set('account_id', filters.accountId);
     if (filters.categoryId) params.set('category_id', filters.categoryId);
     const rows = await apiFetch<Transaction[]>(
@@ -242,6 +241,7 @@ export function TransactionsPage() {
       <label>
         Search
         <input
+          placeholder="Keyword, merchant, category, or similar text"
           value={filters.q}
           onChange={(e) => setFilters({ ...filters, q: e.target.value })}
         />
@@ -307,6 +307,10 @@ export function TransactionsPage() {
         Include pending
       </label>
       <button onClick={() => loadTransactions()}>Refresh</button>
+      <p className="category-editor-note">
+        Search ranks similar description matches and also checks merchant,
+        category, account, and notes.
+      </p>
       <Link to="/categorize">
         <button type="button" className="secondary">
           Open Categorization Studio
