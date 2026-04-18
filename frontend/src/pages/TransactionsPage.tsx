@@ -35,7 +35,8 @@ const initialFilters: TxnFilterInput = {
   categoryId: '',
   minAmount: '',
   maxAmount: '',
-  includePending: true
+  includePending: true,
+  reviewState: 'all'
 };
 
 export function TransactionsPage() {
@@ -46,7 +47,11 @@ export function TransactionsPage() {
     ...initialFilters,
     q: searchParams.get('q') ?? '',
     accountId: searchParams.get('account_id') ?? '',
-    categoryId: searchParams.get('category_id') ?? ''
+    categoryId: searchParams.get('category_id') ?? '',
+    minAmount: searchParams.get('min_amount') ?? '',
+    maxAmount: searchParams.get('max_amount') ?? '',
+    reviewState:
+      (searchParams.get('review_state') as TxnFilterInput['reviewState']) ?? 'all'
   });
   const [start, setStart] = useState(searchParams.get('start') ?? '');
   const [end, setEnd] = useState(searchParams.get('end') ?? '');
@@ -75,6 +80,8 @@ export function TransactionsPage() {
     if (end) params.set('end', end);
     if (filters.accountId) params.set('account_id', filters.accountId);
     if (filters.categoryId) params.set('category_id', filters.categoryId);
+    if (filters.reviewState === 'needs_review') params.set('is_reviewed', '0');
+    if (filters.reviewState === 'reviewed') params.set('is_reviewed', '1');
     const rows = await apiFetch<Transaction[]>(
       `/api/transactions?${params.toString()}`
     );
@@ -107,13 +114,20 @@ export function TransactionsPage() {
     const nextQ = searchParams.get('q') ?? '';
     const nextAccountId = searchParams.get('account_id') ?? '';
     const nextCategoryId = searchParams.get('category_id') ?? '';
+    const nextMinAmount = searchParams.get('min_amount') ?? '';
+    const nextMaxAmount = searchParams.get('max_amount') ?? '';
+    const nextReviewState =
+      (searchParams.get('review_state') as TxnFilterInput['reviewState']) ?? 'all';
     setStart(nextStart);
     setEnd(nextEnd);
     setFilters((current) => ({
       ...current,
       q: nextQ,
       accountId: nextAccountId,
-      categoryId: nextCategoryId
+      categoryId: nextCategoryId,
+      minAmount: nextMinAmount,
+      maxAmount: nextMaxAmount,
+      reviewState: nextReviewState
     }));
     setHorizon(
       preset === 'one_year'
@@ -146,6 +160,21 @@ export function TransactionsPage() {
   }, [filters, start, end, affectedIds, rowsPerPage]);
 
   useEffect(() => {
+    const params = new URLSearchParams();
+    if (horizon === 'one_year') params.set('preset', 'one_year');
+    if (start) params.set('start', start);
+    if (end) params.set('end', end);
+    if (filters.q.trim()) params.set('q', filters.q.trim());
+    if (filters.accountId) params.set('account_id', filters.accountId);
+    if (filters.categoryId) params.set('category_id', filters.categoryId);
+    if (filters.minAmount.trim()) params.set('min_amount', filters.minAmount.trim());
+    if (filters.maxAmount.trim()) params.set('max_amount', filters.maxAmount.trim());
+    if (filters.reviewState !== 'all') params.set('review_state', filters.reviewState);
+    if (affectedIds.size) params.set('ids', Array.from(affectedIds).join(','));
+    setSearchParams(params, { replace: true });
+  }, [affectedIds, end, filters, horizon, setSearchParams, start]);
+
+  useEffect(() => {
     if (currentPage > totalPages) {
       setCurrentPage(totalPages);
     }
@@ -160,6 +189,34 @@ export function TransactionsPage() {
     });
     await loadTransactions();
   }
+
+  async function setReviewed(txnId: string, isReviewed: boolean) {
+    await apiFetch(`/api/transactions/${txnId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        is_reviewed: isReviewed
+      })
+    });
+    await loadTransactions();
+  }
+
+  async function markVisibleReviewed() {
+    for (const txn of pageRows.filter((row) => !row.is_reviewed)) {
+      await apiFetch(`/api/transactions/${txn.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_reviewed: true })
+      });
+    }
+    await loadTransactions();
+  }
+
+  const reviewCounts = useMemo(
+    () => ({
+      needsReview: transactions.filter((txn) => !txn.is_reviewed).length,
+      reviewed: transactions.filter((txn) => txn.is_reviewed).length
+    }),
+    [transactions]
+  );
 
   async function createRuleFromTransaction(txn: Transaction) {
     if (!txn.category_id) return;
@@ -306,7 +363,29 @@ export function TransactionsPage() {
         />
         Include pending
       </label>
+      <label>
+        Review state
+        <select
+          value={filters.reviewState}
+          onChange={(e) =>
+            setFilters({
+              ...filters,
+              reviewState: e.target.value as TxnFilterInput['reviewState']
+            })
+          }
+        >
+          <option value="all">All</option>
+          <option value="needs_review">Needs review</option>
+          <option value="reviewed">Reviewed</option>
+        </select>
+      </label>
       <button onClick={() => loadTransactions()}>Refresh</button>
+      <button type="button" className="secondary" onClick={() => markVisibleReviewed()}>
+        Mark visible reviewed
+      </button>
+      <p className="category-editor-note">
+        Needs review: {reviewCounts.needsReview} · Reviewed: {reviewCounts.reviewed}
+      </p>
       <p className="category-editor-note">
         Search ranks similar description matches and also checks merchant,
         category, account, and notes.
@@ -381,6 +460,8 @@ export function TransactionsPage() {
               <td>
                 {txn.is_pending && <span className="badge">Pending</span>}
                 {txn.transfer_id && <span className="badge">Transfer</span>}
+                {!txn.is_reviewed && <span className="badge">Needs review</span>}
+                {txn.is_reviewed && <span className="badge">Reviewed</span>}
                 {ruleAppliedIds.has(txn.id) && (
                   <span className="badge">Rule applied</span>
                 )}
@@ -391,6 +472,13 @@ export function TransactionsPage() {
               <td>
                 <button onClick={() => createRuleFromTransaction(txn)}>
                   Create rule
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setReviewed(txn.id, !txn.is_reviewed)}
+                >
+                  {txn.is_reviewed ? 'Reopen' : 'Mark reviewed'}
                 </button>
               </td>
             </tr>
@@ -461,7 +549,7 @@ export function TransactionsPage() {
           content: (
             <p className="category-editor-note">
               Manual category edits set an override flag and are not replaced by
-              rule reclassification.
+              rule reclassification. Category edits also mark a transaction as reviewed.
             </p>
           )
         }

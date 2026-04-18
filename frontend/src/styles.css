@@ -1080,6 +1080,37 @@ button.secondary:hover {
   margin-top: 4px;
 }
 
+.budget-family-progress {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.budget-family-progress small,
+.budget-row-status small,
+.budget-summary-grid article small {
+  color: var(--text-muted);
+}
+
+.budget-family-progress-track {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 70%, transparent);
+  overflow: hidden;
+}
+
+.budget-family-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--primary);
+}
+
+.budget-family-progress-fill.is-over,
+.budget-mini-meter-actual.is-over {
+  background: var(--danger);
+}
+
 .budget-category-rows {
   display: grid;
   gap: 14px;
@@ -1139,6 +1170,14 @@ button.secondary:hover {
   background: var(--series-4);
 }
 
+.budget-row-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
 .budget-badge-essential {
   background: color-mix(in srgb, var(--primary) 18%, transparent);
   color: var(--fg);
@@ -1146,6 +1185,16 @@ button.secondary:hover {
 
 .budget-badge-discretionary {
   background: color-mix(in srgb, var(--series-3) 22%, transparent);
+  color: var(--fg);
+}
+
+.budget-badge-ontrack {
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--fg);
+}
+
+.budget-badge-over {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
   color: var(--fg);
 }
 
@@ -1185,6 +1234,171 @@ button.secondary:hover {
   display: flex;
   justify-content: space-between;
   gap: 12px;
+}
+
+.recurring-toolbar {
+  align-items: end;
+}
+
+.recurring-toolbar-note {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 18rem;
+  color: var(--text-muted);
+}
+
+.recurring-card-list details {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.recurring-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.recurring-calendar-wrap {
+  display: grid;
+  gap: 1rem;
+}
+
+.recurring-calendar-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: start;
+  flex-wrap: wrap;
+}
+
+.recurring-calendar-header h3,
+.recurring-calendar-footer h4 {
+  margin: 0;
+}
+
+.recurring-calendar-kpis {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  color: var(--text-muted);
+}
+
+.recurring-calendar-kpis span {
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card-bg);
+}
+
+.recurring-calendar-weekdays,
+.recurring-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.recurring-calendar-weekdays {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.recurring-calendar-day {
+  min-height: 9rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--card-bg) 92%, white 8%);
+  display: grid;
+  align-content: start;
+  gap: 0.75rem;
+}
+
+.recurring-calendar-day header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.recurring-calendar-day header strong {
+  min-width: 1.8rem;
+  min-height: 1.8rem;
+  border-radius: 999px;
+  background: var(--accent-sand);
+  color: var(--bg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+}
+
+.recurring-calendar-day--blank {
+  background: transparent;
+  border-style: dashed;
+  min-height: 0;
+}
+
+.recurring-calendar-list,
+.recurring-upcoming-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.recurring-calendar-list li a,
+.recurring-upcoming-list li {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.recurring-calendar-list li a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.recurring-calendar-list li a:hover strong,
+.recurring-upcoming-list li a:hover strong {
+  text-decoration: underline;
+}
+
+.recurring-calendar-list li span,
+.recurring-upcoming-list li span,
+.recurring-calendar-empty,
+.recurring-calendar-more {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.recurring-calendar-footer {
+  display: grid;
+  gap: 0.75rem;
+}
+
+@media (max-width: 980px) {
+  .recurring-calendar-weekdays,
+  .recurring-calendar-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .recurring-calendar-weekdays {
+    display: none;
+  }
+
+  .recurring-calendar-day--blank {
+    display: none;
+  }
+}
+
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.25rem;
+  text-decoration: none;
 }
 
 .category-editor-note {

@@ -22,7 +22,10 @@ const txns = [
     merchant_id: null,
     merchant_name: null,
     transfer_id: null,
-    notes: null
+    notes: null,
+    manual_category_override: false,
+    is_reviewed: false,
+    reviewed_at: null
   },
   {
     id: '2',
@@ -40,7 +43,10 @@ const txns = [
     merchant_id: null,
     merchant_name: null,
     transfer_id: null,
-    notes: null
+    notes: null,
+    manual_category_override: false,
+    is_reviewed: false,
+    reviewed_at: null
   },
   {
     id: '3',
@@ -58,7 +64,10 @@ const txns = [
     merchant_id: 9,
     merchant_name: 'Whole Foods',
     transfer_id: null,
-    notes: 'Weekly grocery run'
+    notes: 'Weekly grocery run',
+    manual_category_override: false,
+    is_reviewed: true,
+    reviewed_at: '2026-02-22T00:00:00+00:00'
   }
 ];
 
@@ -70,7 +79,8 @@ describe('applyTransactionFilters', () => {
       categoryId: '',
       minAmount: '20',
       maxAmount: '60',
-      includePending: false
+      includePending: false,
+      reviewState: 'all'
     });
 
     expect(filtered).toHaveLength(1);
@@ -84,7 +94,8 @@ describe('applyTransactionFilters', () => {
       categoryId: '',
       minAmount: '',
       maxAmount: '',
-      includePending: true
+      includePending: true,
+      reviewState: 'all'
     });
     const category = applyTransactionFilters(txns as any, {
       q: 'grocery',
@@ -92,7 +103,8 @@ describe('applyTransactionFilters', () => {
       categoryId: '',
       minAmount: '',
       maxAmount: '',
-      includePending: true
+      includePending: true,
+      reviewState: 'all'
     });
 
     expect(fuzzy[0].id).toBe('1');
@@ -112,7 +124,8 @@ describe('applyTransactionFilters', () => {
       categoryId: '',
       minAmount: '',
       maxAmount: '',
-      includePending: true
+      includePending: true,
+      reviewState: 'all'
     });
     const mixed = applyTransactionFilters(txns as any, {
       q: '"whole foods" grocery',
@@ -120,7 +133,8 @@ describe('applyTransactionFilters', () => {
       categoryId: '',
       minAmount: '',
       maxAmount: '',
-      includePending: true
+      includePending: true,
+      reviewState: 'all'
     });
     const miss = applyTransactionFilters(txns as any, {
       q: '"coffee market"',
@@ -128,11 +142,36 @@ describe('applyTransactionFilters', () => {
       categoryId: '',
       minAmount: '',
       maxAmount: '',
-      includePending: true
+      includePending: true,
+      reviewState: 'all'
     });
 
     expect(exact.map((txn: any) => txn.id)).toEqual(['1']);
     expect(mixed.map((txn: any) => txn.id)).toEqual(['3']);
     expect(miss).toHaveLength(0);
+  });
+
+  it('filters by review state', () => {
+    const needsReview = applyTransactionFilters(txns as any, {
+      q: '',
+      accountId: '',
+      categoryId: '',
+      minAmount: '',
+      maxAmount: '',
+      includePending: true,
+      reviewState: 'needs_review'
+    });
+    const reviewed = applyTransactionFilters(txns as any, {
+      q: '',
+      accountId: '',
+      categoryId: '',
+      minAmount: '',
+      maxAmount: '',
+      includePending: true,
+      reviewState: 'reviewed'
+    });
+
+    expect(needsReview.map((txn: any) => txn.id)).toEqual(['1', '2']);
+    expect(reviewed.map((txn: any) => txn.id)).toEqual(['3']);
   });
 });

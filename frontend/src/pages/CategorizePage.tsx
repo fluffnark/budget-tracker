@@ -43,10 +43,13 @@ function defaultFilters(): FilterState {
     start: range.start,
     end: range.end,
     q: '',
+    min_amount: '',
+    max_amount: '',
     account_ids: [],
     account_id: '',
     category_id: null,
     category_family: '',
+    review_state: 'all',
     uncategorized_only: false,
     include_pending: true,
     include_transfers: false
@@ -59,10 +62,13 @@ function parseFilters(searchParams: URLSearchParams): FilterState | null {
     'start',
     'end',
     'q',
+    'min_amount',
+    'max_amount',
     'accounts',
     'account_id',
     'category_id',
     'category_family',
+    'review_state',
     'uncategorized',
     'pending',
     'transfers'
@@ -78,6 +84,8 @@ function parseFilters(searchParams: URLSearchParams): FilterState | null {
     start: searchParams.get('start') ?? base.start,
     end: searchParams.get('end') ?? base.end,
     q: searchParams.get('q') ?? '',
+    min_amount: searchParams.get('min_amount') ?? '',
+    max_amount: searchParams.get('max_amount') ?? '',
     account_ids: (searchParams.get('accounts') ?? '')
       .split(',')
       .map((id) => id.trim())
@@ -85,6 +93,8 @@ function parseFilters(searchParams: URLSearchParams): FilterState | null {
     account_id: searchParams.get('account_id') ?? '',
     category_id: categoryRaw ? Number(categoryRaw) : null,
     category_family: searchParams.get('category_family') ?? '',
+    review_state:
+      (searchParams.get('review_state') as FilterState['review_state']) ?? 'all',
     uncategorized_only: searchParams.get('uncategorized') === '1',
     include_pending: searchParams.get('pending') !== '0',
     include_transfers: searchParams.get('transfers') === '1'
@@ -97,6 +107,8 @@ function serializeFilters(filters: FilterState): URLSearchParams {
   params.set('start', filters.start);
   params.set('end', filters.end);
   if (filters.q.trim()) params.set('q', filters.q.trim());
+  if (filters.min_amount.trim()) params.set('min_amount', filters.min_amount.trim());
+  if (filters.max_amount.trim()) params.set('max_amount', filters.max_amount.trim());
   if (filters.account_ids.length)
     params.set('accounts', filters.account_ids.join(','));
   if (filters.account_id) params.set('account_id', filters.account_id);
@@ -104,6 +116,9 @@ function serializeFilters(filters: FilterState): URLSearchParams {
     params.set('category_id', String(filters.category_id));
   if (filters.category_family)
     params.set('category_family', filters.category_family);
+  if (filters.review_state && filters.review_state !== 'all') {
+    params.set('review_state', filters.review_state);
+  }
   if (filters.uncategorized_only) params.set('uncategorized', '1');
   if (!filters.include_pending) params.set('pending', '0');
   if (filters.include_transfers) params.set('transfers', '1');
@@ -127,6 +142,12 @@ type ParsedLLMRule = {
 };
 
 type LLMPromptMode = 'high_precision' | 'high_coverage';
+type TransactionSortMode =
+  | 'relevance'
+  | 'date_desc'
+  | 'date_asc'
+  | 'amount_asc'
+  | 'amount_desc';
 
 const ALLOWED_RULE_MATCH_TYPES = new Set([
   'contains',
@@ -223,6 +244,7 @@ export function CategorizePage() {
   );
   const [tableRowsPerPage, setTableRowsPerPage] = useState(25);
   const [tablePage, setTablePage] = useState(1);
+  const [tableSort, setTableSort] = useState<TransactionSortMode>('relevance');
   const [reviewRowsPerPage, setReviewRowsPerPage] = useState(25);
   const [reviewPage, setReviewPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -387,11 +409,17 @@ export function CategorizePage() {
   const visibleTransactions = useMemo(() => {
     const excludedAccounts = new Set(filters.account_ids);
     const query = filters.q.trim();
+    const minAmount = filters.min_amount ? Number(filters.min_amount) : null;
+    const maxAmount = filters.max_amount ? Number(filters.max_amount) : null;
     const matches: { txn: Transaction; score: number }[] = [];
 
     transactions.forEach((txn) => {
       if (filters.account_id && txn.account_id !== filters.account_id) return;
       if (excludedAccounts.has(txn.account_id)) return;
+      if (filters.review_state === 'needs_review' && txn.is_reviewed) return;
+      if (filters.review_state === 'reviewed' && !txn.is_reviewed) return;
+      if (minAmount !== null && Math.abs(txn.amount) < minAmount) return;
+      if (maxAmount !== null && Math.abs(txn.amount) > maxAmount) return;
       if (
         filters.uncategorized_only &&
         txn.category_id !== null &&
@@ -435,27 +463,36 @@ export function CategorizePage() {
       matches.push({ txn, score });
     });
 
-    if (!query) {
-      return matches.map((entry) => entry.txn);
-    }
-
     return matches
       .sort((left, right) => {
-        if (right.score !== left.score) return right.score - left.score;
-        return (
+        const postedAtDiff =
           new Date(right.txn.posted_at).getTime() -
-          new Date(left.txn.posted_at).getTime()
-        );
+          new Date(left.txn.posted_at).getTime();
+        if (tableSort === 'relevance') {
+          if (query && right.score !== left.score) return right.score - left.score;
+          return postedAtDiff;
+        }
+        if (tableSort === 'date_desc') return postedAtDiff;
+        if (tableSort === 'date_asc') return -postedAtDiff;
+        const amountDiff = Math.abs(left.txn.amount) - Math.abs(right.txn.amount);
+        if (tableSort === 'amount_asc') {
+          return amountDiff || postedAtDiff;
+        }
+        return -amountDiff || postedAtDiff;
       })
       .map((entry) => entry.txn);
   }, [
     transactions,
     filters.q,
+    filters.min_amount,
+    filters.max_amount,
     filters.account_ids,
     filters.account_id,
+    filters.review_state,
     filters.uncategorized_only,
     filters.category_id,
     filters.category_family,
+    tableSort,
     pathMap,
     uncategorizedCategoryIds
   ]);
@@ -1372,6 +1409,27 @@ ${JSON.stringify(compactPayload, null, 2)}
                       ${avgSpendPerDay.toFixed(2)}
                     </strong>
                   </article>
+                </div>
+                <div className="row-actions">
+                  <label className="inline">
+                    Sort by
+                    <select
+                      aria-label="Sort categorization transactions"
+                      value={tableSort}
+                      onChange={(e) => {
+                        setTableSort(e.target.value as TransactionSortMode);
+                        setTablePage(1);
+                      }}
+                    >
+                      <option value="relevance">
+                        {filters.q.trim() ? 'Best match' : 'Newest first'}
+                      </option>
+                      <option value="date_desc">Newest first</option>
+                      <option value="date_asc">Oldest first</option>
+                      <option value="amount_asc">Amount: low to high</option>
+                      <option value="amount_desc">Amount: high to low</option>
+                    </select>
+                  </label>
                 </div>
                 <table className="table dense" data-testid="categorize-layout">
                   <thead>

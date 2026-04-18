@@ -4,6 +4,7 @@ import { CategoriesPage } from '../pages/CategoriesPage';
 import { CategorizePage } from '../pages/CategorizePage';
 import { DashboardPage } from '../pages/DashboardPage';
 import { ExportPage } from '../pages/ExportPage';
+import { RecurringPage } from '../pages/RecurringPage';
 import { RulesPage } from '../pages/RulesPage';
 import { SettingsPage } from '../pages/SettingsPage';
 
@@ -34,6 +35,14 @@ export const WORKSPACE_SECTIONS: WorkspaceSection[] = [
     description: 'Categorize transactions, review confidence, and tune filters.',
     group: 'track',
     render: () => <CategorizePage />
+  },
+  {
+    id: 'recurring',
+    label: 'Recurring',
+    shortLabel: 'Recurring',
+    description: 'Review subscriptions, fixed bills, and emerging recurring charges.',
+    group: 'track',
+    render: () => <RecurringPage />
   },
   {
     id: 'budget',

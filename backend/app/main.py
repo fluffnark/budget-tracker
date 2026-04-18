@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -423,6 +423,7 @@ def get_transactions(
     q: str | None = None,
     min_amount: float | None = None,
     max_amount: float | None = None,
+    is_reviewed: bool | None = None,
     include_pending: bool = True,
     include_transfers: bool = True,
     limit: int = Query(default=200, le=500),
@@ -458,6 +459,8 @@ def get_transactions(
         query = query.where(func.abs(Transaction.amount) >= min_amount)
     if max_amount is not None:
         query = query.where(func.abs(Transaction.amount) <= max_amount)
+    if is_reviewed is not None:
+        query = query.where(Transaction.is_reviewed.is_(is_reviewed))
     if not include_pending:
         query = query.where(Transaction.is_pending.is_(False))
     if not include_transfers:
@@ -489,6 +492,8 @@ def get_transactions(
             transfer_id=txn.transfer_id,
             notes=txn.notes,
             manual_category_override=txn.manual_category_override,
+            is_reviewed=txn.is_reviewed,
+            reviewed_at=txn.reviewed_at,
         )
         for txn, account, category, merchant in rows
     ]
@@ -518,20 +523,29 @@ def patch_transaction(
         "notes": txn.notes,
         "is_pending": txn.is_pending,
         "manual_category_override": txn.manual_category_override,
+        "is_reviewed": txn.is_reviewed,
+        "reviewed_at": txn.reviewed_at.isoformat() if txn.reviewed_at else None,
     }
 
     if payload.category_id is not None:
         txn.category_id = payload.category_id
         txn.manual_category_override = True
+        txn.is_reviewed = True
+        txn.reviewed_at = datetime.now(UTC)
     elif "category_id" in payload.model_fields_set:
         txn.category_id = None
         txn.manual_category_override = False
+        txn.is_reviewed = True
+        txn.reviewed_at = datetime.now(UTC)
     if payload.merchant_id is not None:
         txn.merchant_id = payload.merchant_id
     if payload.notes is not None:
         txn.notes = payload.notes
     if payload.is_pending is not None:
         txn.is_pending = payload.is_pending
+    if payload.is_reviewed is not None:
+        txn.is_reviewed = payload.is_reviewed
+        txn.reviewed_at = datetime.now(UTC) if payload.is_reviewed else None
 
     after = {
         "category_id": txn.category_id,
@@ -539,6 +553,8 @@ def patch_transaction(
         "notes": txn.notes,
         "is_pending": txn.is_pending,
         "manual_category_override": txn.manual_category_override,
+        "is_reviewed": txn.is_reviewed,
+        "reviewed_at": txn.reviewed_at.isoformat() if txn.reviewed_at else None,
     }
     db.add(
         AuditLog(
@@ -577,6 +593,8 @@ def patch_transaction(
         transfer_id=txn.transfer_id,
         notes=txn.notes,
         manual_category_override=txn.manual_category_override,
+        is_reviewed=txn.is_reviewed,
+        reviewed_at=txn.reviewed_at,
     )
 
 

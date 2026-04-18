@@ -401,6 +401,33 @@ def test_rule_does_not_override_manual_category(client, db_session: Session):
     ).scalar_one()
     assert updated.category_id == food_id
     assert updated.manual_category_override is True
+    assert updated.is_reviewed is True
+    assert updated.reviewed_at is not None
+
+
+def test_transaction_review_toggle(client, db_session: Session):
+    _claim_and_sync(client)
+
+    target_txn = db_session.execute(select(Transaction).limit(1)).scalar_one()
+    target_txn.is_reviewed = False
+    target_txn.reviewed_at = None
+    db_session.commit()
+
+    patch = client.patch(
+        f"/api/transactions/{target_txn.id}",
+        json={"is_reviewed": True},
+    )
+    assert patch.status_code == 200
+    assert patch.json()["is_reviewed"] is True
+    assert patch.json()["reviewed_at"] is not None
+
+    reopened = client.patch(
+        f"/api/transactions/{target_txn.id}",
+        json={"is_reviewed": False},
+    )
+    assert reopened.status_code == 200
+    assert reopened.json()["is_reviewed"] is False
+    assert reopened.json()["reviewed_at"] is None
 
 
 def test_export_includes_category_paths(client):
@@ -560,26 +587,44 @@ def test_suggest_respects_date_range_and_account_filter(client, db_session: Sess
         ).scalar_one()
         txns = db_session.execute(select(Transaction).limit(4)).scalars().all()
         assert len(txns) == 4
+        target_account_id = txns[2].account_id
+        other_account_id = txns[3].account_id
 
         txns[0].posted_at = datetime(2026, 2, 10, tzinfo=UTC)
         txns[0].description_norm = "CITY WATER BILL"
+        txns[0].account_id = target_account_id
+        txns[0].amount = -50
         txns[0].category_id = transportation_id
         txns[0].manual_category_override = False
+        txns[0].transfer_id = None
+        txns[0].is_pending = False
 
         txns[1].posted_at = datetime(2026, 2, 11, tzinfo=UTC)
         txns[1].description_norm = "CITY WATER BILL"
+        txns[1].account_id = target_account_id
+        txns[1].amount = -52
         txns[1].category_id = transportation_id
         txns[1].manual_category_override = False
+        txns[1].transfer_id = None
+        txns[1].is_pending = False
 
         txns[2].posted_at = datetime(2026, 2, 12, tzinfo=UTC)
         txns[2].description_norm = "CITY WATER BILL"
+        txns[2].account_id = target_account_id
+        txns[2].amount = -48
         txns[2].category_id = None
         txns[2].manual_category_override = False
+        txns[2].transfer_id = None
+        txns[2].is_pending = False
 
         txns[3].posted_at = datetime(2026, 1, 2, tzinfo=UTC)
         txns[3].description_norm = "CITY WATER BILL"
+        txns[3].account_id = other_account_id
+        txns[3].amount = -47
         txns[3].category_id = None
         txns[3].manual_category_override = False
+        txns[3].transfer_id = None
+        txns[3].is_pending = False
         db_session.commit()
 
         resp = client.post(

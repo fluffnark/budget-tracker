@@ -99,6 +99,7 @@ export function SectionLayout({
   const orderedSections = useMemo(() => sections, [sections]);
 
   function jumpTo(id: string) {
+    setCollapsed((prev) => ({ ...prev, [id]: false }));
     const element = document.getElementById(id);
     if (!element) return;
     window.history.replaceState(null, '', `#${id}`);

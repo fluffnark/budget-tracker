@@ -29,6 +29,8 @@ export type Transaction = {
   transfer_id: number | null;
   notes: string | null;
   manual_category_override: boolean;
+  is_reviewed: boolean;
+  reviewed_at: string | null;
 };
 
 export type Rule = {

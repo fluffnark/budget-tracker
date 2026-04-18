@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BudgetPage } from './BudgetPage';
@@ -123,7 +124,8 @@ const recurringPayload = {
       next_expected_at: '2026-03-20',
       is_cancel_candidate: false
     }
-  ]
+  ],
+  review_candidates: []
 };
 
 describe('BudgetPage', () => {
@@ -154,7 +156,11 @@ describe('BudgetPage', () => {
   });
 
   it('renders budget summaries and category rows', async () => {
-    render(<BudgetPage />);
+    render(
+      <MemoryRouter>
+        <BudgetPage />
+      </MemoryRouter>
+    );
 
     await waitFor(() => {
       expect(
@@ -167,7 +173,11 @@ describe('BudgetPage', () => {
   });
 
   it('saves the edited budget month', async () => {
-    render(<BudgetPage />);
+    render(
+      <MemoryRouter>
+        <BudgetPage />
+      </MemoryRouter>
+    );
 
     await waitFor(() => {
       expect(screen.getAllByText('Groceries').length).toBeGreaterThan(0);

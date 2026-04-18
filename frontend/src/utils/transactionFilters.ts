@@ -7,6 +7,7 @@ export type TxnFilterInput = {
   minAmount: string;
   maxAmount: string;
   includePending: boolean;
+  reviewState: 'all' | 'needs_review' | 'reviewed';
 };
 
 function tokenize(value: string): string[] {
@@ -163,6 +164,12 @@ export function applyTransactionFilters(
 
   transactions.forEach((txn) => {
     if (!filters.includePending && txn.is_pending) {
+      return;
+    }
+    if (filters.reviewState === 'needs_review' && txn.is_reviewed) {
+      return;
+    }
+    if (filters.reviewState === 'reviewed' && !txn.is_reviewed) {
       return;
     }
     if (filters.accountId && txn.account_id !== filters.accountId) {

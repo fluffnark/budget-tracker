@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:16
+    restart: unless-stopped
     environment:
       POSTGRES_DB: budget
       POSTGRES_USER: budget
@@ -13,18 +14,20 @@ services:
   backend:
     build:
       context: ./backend
+    restart: unless-stopped
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://budget:budget@db:5432/budget
       PYTHONPATH: /app
     ports:
-      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+      - "${BACKEND_BIND_IP:-127.0.0.1}:${BACKEND_PORT:-8000}:8000"
     depends_on:
       - db
 
   frontend:
     build:
       context: ./frontend
+    restart: unless-stopped
     env_file: .env
     environment:
       VITE_PROXY_TARGET: ${VITE_PROXY_TARGET:-http://backend:8000}

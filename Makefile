@@ -1,4 +1,4 @@
-.PHONY: dev dev-backend dev-frontend dev-backend-fast dev-frontend-fast dev-local-backend dev-local-frontend db-up build stop test lint cleanup-accounts tailscale-service
+.PHONY: dev dev-backend dev-frontend dev-backend-fast dev-frontend-fast dev-local-backend dev-local-frontend db-up build app-up app-up-fast app-stop app-restart status logs logs-backend logs-frontend logs-db stop test lint cleanup-accounts tailscale-service service-install service-enable service-start service-stop service-status service-logs
 
 dev:
 	docker compose up --build
@@ -27,6 +27,33 @@ dev-local-frontend:
 build:
 	docker compose build backend frontend
 
+app-up:
+	docker compose up -d --build --force-recreate db backend frontend
+
+app-up-fast:
+	docker compose up -d --force-recreate db backend frontend
+
+app-stop:
+	docker compose stop frontend backend db
+
+app-restart:
+	docker compose up -d --force-recreate db backend frontend
+
+status:
+	docker compose ps
+
+logs:
+	docker compose logs -f --tail=100 db backend frontend
+
+logs-backend:
+	docker compose logs -f --tail=100 backend
+
+logs-frontend:
+	docker compose logs -f --tail=100 frontend
+
+logs-db:
+	docker compose logs -f --tail=100 db
+
 stop:
 	./stop_app.sh
 
@@ -45,3 +72,21 @@ cleanup-accounts:
 
 tailscale-service:
 	./scripts/configure_tailscale_service.sh
+
+service-install:
+	./scripts/install_systemd_user_service.sh
+
+service-enable:
+	systemctl --user enable budget-tracker.service
+
+service-start:
+	systemctl --user start budget-tracker.service
+
+service-stop:
+	systemctl --user stop budget-tracker.service
+
+service-status:
+	systemctl --user status --no-pager budget-tracker.service
+
+service-logs:
+	journalctl --user -u budget-tracker.service -n 200 -f

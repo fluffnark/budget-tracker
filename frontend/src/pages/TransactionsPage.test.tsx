@@ -46,7 +46,9 @@ describe('TransactionsPage rule feedback', () => {
                 merchant_name: null,
                 transfer_id: null,
                 notes: null,
-                manual_category_override: false
+                manual_category_override: false,
+                is_reviewed: false,
+                reviewed_at: null
               }
             ])
           );

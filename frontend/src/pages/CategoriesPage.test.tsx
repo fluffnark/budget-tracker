@@ -60,6 +60,7 @@ describe('CategoriesPage', () => {
       .getByRole('heading', { name: 'Category Tree' })
       .closest('section');
     expect(treeCard).not.toBeNull();
+    fireEvent.click(within(treeCard!).getByTitle('Expand Category Tree'));
     await waitFor(() => {
       expect(within(treeCard!).getByText('Housing')).toBeInTheDocument();
     });

@@ -19,7 +19,6 @@ kill_session_if_exists "$APP_SESSION"
 kill_session_if_exists "$LEGACY_BACKEND_SESSION"
 kill_session_if_exists "$LEGACY_FRONTEND_SESSION"
 
-docker compose stop frontend backend >/dev/null 2>&1 || true
-docker compose rm -f frontend backend >/dev/null 2>&1 || true
+make app-stop >/dev/null 2>&1 || true
 
-echo "Stopped app sessions and frontend/backend services."
+echo "Stopped app tmux sessions and docker services."

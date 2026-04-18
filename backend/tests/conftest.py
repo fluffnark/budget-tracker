@@ -32,8 +32,8 @@ def _derive_test_database_url() -> str:
 
     db_name = base.database or "budget"
     if db_name.endswith("_test"):
-        return str(base)
-    return str(base.set(database=f"{db_name}_test"))
+        return base.render_as_string(hide_password=False)
+    return base.set(database=f"{db_name}_test").render_as_string(hide_password=False)
 
 
 def _ensure_safe_test_db_url(database_url: str) -> None:
@@ -51,7 +51,7 @@ def _ensure_postgres_database_exists(database_url: str) -> None:
     if not re.fullmatch(r"[A-Za-z0-9_]+", db_name):
         raise RuntimeError(f"Unsafe test database name '{db_name}'")
 
-    admin_url = str(parsed.set(database="postgres"))
+    admin_url = parsed.set(database="postgres").render_as_string(hide_password=False)
     admin_engine = create_engine(admin_url, pool_pre_ping=True, isolation_level="AUTOCOMMIT")
     try:
         with admin_engine.connect() as conn:
@@ -105,7 +105,14 @@ def client(db_session: Session) -> TestClient:
             "/api/auth/login",
             json={"email": "owner@example.com", "password": "test-password"},
         )
-        assert login_resp.status_code == 200
+        if login_resp.status_code == 409:
+            setup_resp = c.post(
+                "/api/auth/setup",
+                json={"email": "owner@example.com", "password": "test-password"},
+            )
+            assert setup_resp.status_code == 200
+        else:
+            assert login_resp.status_code == 200
         yield c
 
     app.dependency_overrides.clear()

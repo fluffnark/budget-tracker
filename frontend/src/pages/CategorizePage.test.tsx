@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -23,7 +23,9 @@ function baseTransactions() {
       merchant_name: null,
       transfer_id: null,
       notes: null,
-      manual_category_override: false
+      manual_category_override: false,
+      is_reviewed: false,
+      reviewed_at: null
     },
     {
       id: 'txn-2',
@@ -42,7 +44,9 @@ function baseTransactions() {
       merchant_name: 'Utility Co',
       transfer_id: null,
       notes: 'monthly utility',
-      manual_category_override: false
+      manual_category_override: false,
+      is_reviewed: false,
+      reviewed_at: null
     }
   ];
 }
@@ -200,6 +204,45 @@ describe('CategorizePage', () => {
     await waitFor(() => {
       expect(screen.getByText('COFFEE SHOP')).toBeInTheDocument();
       expect(screen.queryByText('UTILITY PAYMENT')).not.toBeInTheDocument();
+    });
+  });
+
+  it('sorts studio rows by amount ascending and descending', async () => {
+    render(
+      <MemoryRouter>
+        <CategorizePage />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('COFFEE SHOP')).toBeInTheDocument();
+      expect(screen.getByText('UTILITY PAYMENT')).toBeInTheDocument();
+    });
+
+    const table = screen.getByTestId('categorize-layout');
+    const sortSelect = screen.getByLabelText('Sort categorization transactions');
+    const rowDescriptions = () =>
+      within(table)
+        .getAllByRole('row')
+        .slice(1)
+        .map((row) => within(row).getAllByRole('cell')[1]?.textContent);
+
+    expect(rowDescriptions()).toEqual(['UTILITY PAYMENT', 'COFFEE SHOP']);
+
+    fireEvent.change(sortSelect, {
+      target: { value: 'amount_asc' }
+    });
+
+    await waitFor(() => {
+      expect(rowDescriptions()).toEqual(['COFFEE SHOP', 'UTILITY PAYMENT']);
+    });
+
+    fireEvent.change(sortSelect, {
+      target: { value: 'amount_desc' }
+    });
+
+    await waitFor(() => {
+      expect(rowDescriptions()).toEqual(['UTILITY PAYMENT', 'COFFEE SHOP']);
     });
   });
 

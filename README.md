@@ -22,7 +22,8 @@ A local-first budget tracking app with SimpleFIN ingestion, transfer deconflicti
    - Fast local restart: `./start_app.sh --docker-fast`
    - Tailscale service mode: `./start_app.sh --tailscale`
 5. Open the app:
-   - Frontend: `http://127.0.0.1:5173/budget/`
+   - Frontend: `http://harmony.local:5173/budget/`
+   - Fallback local URL: `http://127.0.0.1:5173/budget/`
    - Backend health: `http://127.0.0.1:58010/api/health`
 6. First run only:
    - Open `/budget/login`
@@ -36,8 +37,19 @@ A local-first budget tracking app with SimpleFIN ingestion, transfer deconflicti
 8. Stop the app when needed:
    - `./stop_app.sh`
 
-## Startup (Shared Host / tmux)
-Use the included launcher for `http://harmony.local:5173/`:
+## Runtime Model
+Recommended split:
+- Detached Docker Compose is the long-running runtime.
+- tmux is only for log viewing and ad hoc debugging.
+- `make` is the control surface for start, stop, status, and logs.
+
+Why:
+- Compose with `restart: unless-stopped` auto-recovers containers after crashes and host reboots.
+- The app no longer depends on a tmux pane surviving to stay online.
+- Logs are available with both `docker compose logs` and optional `systemd --user`.
+
+## Startup (Shared Host / tmux Logs)
+Use the included launcher for `http://harmony.local:5173/budget/`:
 
 1. Start in a named tmux session with 2 panes:
    - `./start_app.sh` (docker with rebuild)
@@ -47,18 +59,48 @@ Use the included launcher for `http://harmony.local:5173/`:
 2. Attach:
    - `tmux attach -t budget-app`
 3. Pane layout:
-   - Left pane: backend (`docker compose up --build backend`)
-   - Right pane: frontend (`docker compose up --build --no-deps frontend`)
+   - Left pane: backend logs
+   - Right pane: frontend logs
 4. Stop:
-   - `tmux kill-session -t budget-app`
-   - Or run `./stop_app.sh` (also available as `make stop`)
+   - `./stop_app.sh`
+   - Or `make app-stop`
 
 Notes:
 - `start_app.sh` enables tmux mouse support and vi keys.
+- In shared-host mode the frontend binds to `0.0.0.0` so `harmony.local:5173` works on the LAN.
+- The backend still defaults to `127.0.0.1` for safety; override `BACKEND_BIND_IP` only if you truly need remote API access.
 - `start_app.sh --local` is the lightest startup path and uses `make dev-local-backend` / `make dev-local-frontend`.
-- If `8000` is already in use, backend is auto-mapped to `58010` (or another fallback).
-- Frontend is exposed on `0.0.0.0:5173` for `harmony.local`.
+- If `8000` or `5173` are already in use, the launcher picks fallback ports instead of killing unrelated processes.
 - `start_app.sh --tailscale` keeps the frontend on `127.0.0.1` and clears the `/budget` basename so the app can live at `https://budget.great-kettle.ts.net/`.
+
+## Make Commands
+- `make app-up` builds and starts `db`, `backend`, and `frontend` detached.
+- `make app-up-fast` starts detached without rebuilding images.
+- `make app-stop` stops app containers without deleting the database volume.
+- `make app-restart` recreates app containers.
+- `make status` shows container status.
+- `make logs` tails all app logs.
+- `make logs-backend`
+- `make logs-frontend`
+- `make logs-db`
+
+## Optional User Service
+For automatic startup after login, install the provided `systemd --user` service:
+
+1. Install the service file:
+   - `make service-install`
+2. Enable and start it:
+   - `make service-enable`
+   - `make service-start`
+3. Check service state and logs:
+   - `make service-status`
+   - `make service-logs`
+
+Notes:
+- The service runs `make app-up-fast`, so it uses existing images and Compose restart policies.
+- For startup before login, enable lingering once:
+  - `sudo loginctl enable-linger $USER`
+- Runtime logs remain available through `docker compose logs` even without systemd.
 
 ## Tailscale Service (`budget.great-kettle.ts.net`)
 This repo now includes a dedicated Tailscale service path for the app root.
@@ -230,6 +272,11 @@ Use this quick manual check in mock mode:
 - Frontend proxies `/api` requests through Vite to avoid cross-origin browser/extension interference.
 
 ## Troubleshooting
+- App looks down on `harmony.local`:
+  - Check `make status`
+  - Check `make logs-frontend`
+  - The frontend should bind on `0.0.0.0`; confirm with `ss -ltnp | grep :5173`
+  - If port `5173` is occupied by another app, `./start_app.sh` will choose a fallback port and print the actual URL
 - `ERR_BLOCKED_BY_CLIENT` on login:
   - Usually caused by browser extensions blocking direct `127.0.0.1` API calls.
   - This app now uses same-origin `/api` proxying from Vite.

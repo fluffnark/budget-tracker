@@ -16,10 +16,13 @@ export type FilterState = {
   start: string;
   end: string;
   q: string;
+  min_amount: string;
+  max_amount: string;
   account_ids: string[];
   account_id?: string;
   category_id: number | null;
   category_family?: string;
+  review_state?: 'all' | 'needs_review' | 'reviewed';
   uncategorized_only: boolean;
   include_pending: boolean;
   include_transfers: boolean;
@@ -166,6 +169,30 @@ export function FilterBar({
         </label>
 
         <label>
+          Min amount
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            value={value.min_amount}
+            disabled={disabled}
+            onChange={(e) => update({ min_amount: e.target.value })}
+          />
+        </label>
+
+        <label>
+          Max amount
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            value={value.max_amount}
+            disabled={disabled}
+            onChange={(e) => update({ max_amount: e.target.value })}
+          />
+        </label>
+
+        <label>
           Category
           <CategorySelector
             categories={categories}
@@ -197,6 +224,23 @@ export function FilterBar({
         >
           Uncategorized
         </button>
+
+        <label>
+          Review state
+          <select
+            value={value.review_state ?? 'all'}
+            disabled={disabled}
+            onChange={(e) =>
+              update({
+                review_state: e.target.value as NonNullable<FilterState['review_state']>
+              })
+            }
+          >
+            <option value="all">All</option>
+            <option value="needs_review">Needs review</option>
+            <option value="reviewed">Reviewed</option>
+          </select>
+        </label>
 
         <label className="inline">
           <input

@@ -175,6 +175,7 @@ class TransactionPatchRequest(BaseModel):
     merchant_id: int | None = None
     notes: str | None = None
     is_pending: bool | None = None
+    is_reviewed: bool | None = None
 
 
 class TransactionResponse(BaseModel):
@@ -195,6 +196,8 @@ class TransactionResponse(BaseModel):
     transfer_id: int | None
     notes: str | None
     manual_category_override: bool
+    is_reviewed: bool
+    reviewed_at: datetime | None
 
 
 class AccountResponse(BaseModel):

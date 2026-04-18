@@ -38,6 +38,19 @@ function fmtMoney(value: number): string {
   return `${sign}$${Math.abs(value).toFixed(2)}`;
 }
 
+function budgetUsage(planned: number, actual: number): number {
+  if (planned <= 0) return actual > 0 ? 100 : 0;
+  return Math.max(0, (actual / planned) * 100);
+}
+
+function budgetStatusLabel(planned: number, actual: number): string {
+  const delta = planned - actual;
+  if (planned <= 0 && actual > 0) return 'Unplanned spend';
+  if (delta < 0) return `${fmtMoney(Math.abs(delta))} over`;
+  if (delta > 0) return `${fmtMoney(delta)} left`;
+  return 'On target';
+}
+
 export function BudgetPage() {
   const navigate = useNavigate();
   const [monthValue, setMonthValue] = useState(new Date().toISOString().slice(0, 7));
@@ -139,7 +152,8 @@ export function BudgetPage() {
         family: group.family,
         planned: Number(group.planned.toFixed(2)),
         actual: Number(group.actual.toFixed(2)),
-        remaining: Number((group.planned - group.actual).toFixed(2))
+        remaining: Number((group.planned - group.actual).toFixed(2)),
+        progress: Number(Math.min(100, budgetUsage(group.planned, group.actual)).toFixed(2))
       })),
     [groupedRows]
   );
@@ -622,10 +636,11 @@ export function BudgetPage() {
                 <h3>Income available</h3>
                 <p className="big">{fmtMoney(incomeAvailable)}</p>
               </article>
-              <article className="card">
-                <h3>Planned spending</h3>
-                <p className="big">{fmtMoney(plannedSpending)}</p>
-              </article>
+                <article className="card">
+                  <h3>Planned spending</h3>
+                  <p className="big">{fmtMoney(plannedSpending)}</p>
+                  <small>{budgetStatusLabel(incomeAvailable, plannedSpending + Number(plannedSavings || 0))}</small>
+                </article>
               <article className="card">
                 <h3>Planned savings</h3>
                 <p className="big">{fmtMoney(Number(plannedSavings || 0))}</p>
@@ -781,7 +796,27 @@ export function BudgetPage() {
                           Planned {fmtMoney(group.planned)} • Actual {fmtMoney(group.actual)}
                         </small>
                       </div>
+                      <span
+                        className={`badge ${
+                          group.actual > group.planned ? 'budget-badge-over' : 'budget-badge-ontrack'
+                        }`}
+                      >
+                        {budgetStatusLabel(group.planned, group.actual)}
+                      </span>
                     </summary>
+                    <div className="budget-family-progress">
+                      <div className="budget-family-progress-track">
+                        <div
+                          className={`budget-family-progress-fill ${
+                            group.actual > group.planned ? 'is-over' : ''
+                          }`}
+                          style={{
+                            width: `${Math.min(100, budgetUsage(group.planned, group.actual))}%`
+                          }}
+                        />
+                      </div>
+                      <small>{Math.round(budgetUsage(group.planned, group.actual))}% of plan used</small>
+                    </div>
                     <div className="budget-category-rows">
                       {group.items.map((row) => (
                         <div key={row.category_id} className="budget-category-row">
@@ -865,16 +900,26 @@ export function BudgetPage() {
                               style={{ width: '100%' }}
                             />
                             <div
-                              className="budget-mini-meter-actual"
+                              className={`budget-mini-meter-actual ${
+                                row.actual_amount > row.planned_amount ? 'is-over' : ''
+                              }`}
                               style={{
                                 width: `${Math.min(
                                   100,
-                                  row.planned_amount > 0
-                                    ? (row.actual_amount / row.planned_amount) * 100
-                                    : 0
+                                  budgetUsage(row.planned_amount, row.actual_amount)
                                 )}%`
                               }}
                             />
+                          </div>
+                          <div className="budget-row-status">
+                            <small>{Math.round(budgetUsage(row.planned_amount, row.actual_amount))}% used</small>
+                            <small
+                              className={
+                                row.actual_amount > row.planned_amount ? 'budget-negative' : 'budget-positive'
+                              }
+                            >
+                              {budgetStatusLabel(row.planned_amount, row.actual_amount)}
+                            </small>
                           </div>
                         </div>
                       ))}
