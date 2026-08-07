@@ -7,6 +7,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models import (
     Account,
     BalanceSnapshot,
@@ -16,8 +17,8 @@ from app.models import (
     Transaction,
     Transfer,
 )
-from app.config import settings
 from app.security import decrypt_access_url
+from app.services.budgeting import refresh_recurring_payment_analysis
 from app.services.normalization import (
     build_ingestion_hash,
     build_pending_fingerprint,
@@ -74,7 +75,9 @@ def _payload_balance_signature(acct_payload: dict) -> tuple[str, str]:
     return current or "", available or ""
 
 
-def _canonical_account_identity(acct_payload: dict, *, institution_name: str) -> tuple[str, str, str, str]:
+def _canonical_account_identity(
+    acct_payload: dict, *, institution_name: str
+) -> tuple[str, str, str, str]:
     return (
         institution_name.strip().lower(),
         (acct_payload.get("name") or "").strip().lower(),
@@ -103,12 +106,7 @@ def _payload_signature(acct_payload: dict, *, institution_name: str) -> str:
                 _normalize_string(txn.get("posted") or txn.get("transacted_at")) or "",
                 _normalize_string(txn.get("amount")) or "",
                 normalize_description(
-                    (
-                        txn.get("description")
-                        or txn.get("payee")
-                        or txn.get("memo")
-                        or ""
-                    ).strip()
+                    (txn.get("description") or txn.get("payee") or txn.get("memo") or "").strip()
                     or "Unknown"
                 ),
             ]
@@ -152,7 +150,8 @@ def _update_account_provider_meta(
         _account_meta_values(account, "simplefin_balance_ids") | balance_ids
     )
     meta["simplefin_payload_signatures"] = _sorted_unique_strings(
-        _account_meta_values(account, "simplefin_payload_signatures") | (payload_signatures or set())
+        _account_meta_values(account, "simplefin_payload_signatures")
+        | (payload_signatures or set())
     )
     if institution_name:
         meta["simplefin_institution_name"] = institution_name
@@ -170,18 +169,24 @@ def _select_survivor(accounts: list[Account]) -> Account:
     )[0]
 
 
-def _relink_transfer_reference(db: Session, *, duplicate_txn: Transaction, survivor_txn: Transaction) -> None:
+def _relink_transfer_reference(
+    db: Session, *, duplicate_txn: Transaction, survivor_txn: Transaction
+) -> None:
     duplicate_transfer = duplicate_txn.transfer_id
     if duplicate_transfer is None:
         return
     if survivor_txn.transfer_id is None:
         survivor_txn.transfer_id = duplicate_transfer
 
-    outgoing = db.execute(select(Transfer).where(Transfer.txn_out_id == duplicate_txn.id)).scalar_one_or_none()
+    outgoing = db.execute(
+        select(Transfer).where(Transfer.txn_out_id == duplicate_txn.id)
+    ).scalar_one_or_none()
     if outgoing and outgoing.txn_out_id != survivor_txn.id:
         outgoing.txn_out_id = survivor_txn.id
 
-    incoming = db.execute(select(Transfer).where(Transfer.txn_in_id == duplicate_txn.id)).scalar_one_or_none()
+    incoming = db.execute(
+        select(Transfer).where(Transfer.txn_in_id == duplicate_txn.id)
+    ).scalar_one_or_none()
     if incoming and incoming.txn_in_id != survivor_txn.id:
         incoming.txn_in_id = survivor_txn.id
 
@@ -197,9 +202,8 @@ def _merge_transaction_record(
     if survivor_txn.merchant_id is None and duplicate_txn.merchant_id is not None:
         survivor_txn.merchant_id = duplicate_txn.merchant_id
     if (
-        (survivor_txn.category_id is None or not survivor_txn.manual_category_override)
-        and duplicate_txn.category_id is not None
-    ):
+        survivor_txn.category_id is None or not survivor_txn.manual_category_override
+    ) and duplicate_txn.category_id is not None:
         survivor_txn.category_id = duplicate_txn.category_id
         survivor_txn.manual_category_override = duplicate_txn.manual_category_override
     if not survivor_txn.notes and duplicate_txn.notes:
@@ -215,17 +219,19 @@ def _merge_accounts(db: Session, *, survivor: Account, duplicate: Account) -> No
     if survivor.id == duplicate.id:
         return
 
-    target_transactions = db.execute(
-        select(Transaction).where(Transaction.account_id == survivor.id)
-    ).scalars().all()
+    target_transactions = (
+        db.execute(select(Transaction).where(Transaction.account_id == survivor.id)).scalars().all()
+    )
     by_provider_id = {
         txn.provider_txn_id: txn for txn in target_transactions if txn.provider_txn_id is not None
     }
     by_ingestion_hash = {txn.ingestion_hash: txn for txn in target_transactions}
 
-    duplicate_transactions = db.execute(
-        select(Transaction).where(Transaction.account_id == duplicate.id)
-    ).scalars().all()
+    duplicate_transactions = (
+        db.execute(select(Transaction).where(Transaction.account_id == duplicate.id))
+        .scalars()
+        .all()
+    )
     for txn in duplicate_transactions:
         amount = float(txn.amount)
         new_pending_fingerprint = build_pending_fingerprint(
@@ -280,9 +286,9 @@ def _matching_simplefin_accounts(
     payload_signature: str,
     identity: tuple[str, str, str, str],
 ) -> list[Account]:
-    simplefin_accounts = db.execute(
-        select(Account).where(Account.source_type == "simplefin")
-    ).scalars().all()
+    simplefin_accounts = (
+        db.execute(select(Account).where(Account.source_type == "simplefin")).scalars().all()
+    )
 
     exact_matches: list[Account] = []
     alias_matches: list[Account] = []
@@ -463,8 +469,11 @@ def run_sync(
     connection.last_sync_at = now
     connection.status = "ok"
     db.commit()
+    recurring_snapshot = None
+    if not balances_only:
+        recurring_snapshot = refresh_recurring_payment_analysis(db, now=now)
 
-    return {
+    result = {
         "accounts": accounts_seen,
         "transactions_inserted": inserted,
         "transactions_updated": updated,
@@ -473,6 +482,14 @@ def run_sync(
         "windows_processed": len(windows),
         "synced_at": now.isoformat(),
     }
+    if recurring_snapshot is not None:
+        result["recurring_candidates"] = (
+            len(recurring_snapshot["cancel_candidates"])
+            + len(recurring_snapshot["essential_candidates"])
+            + len(recurring_snapshot["review_candidates"])
+        )
+        result["recurring_as_of"] = recurring_snapshot["as_of"].isoformat()
+    return result
 
 
 def _deactivate_missing_simplefin_accounts(db: Session, *, seen_provider_ids: set[str]) -> int:

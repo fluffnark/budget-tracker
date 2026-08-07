@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-import re
 from statistics import mean
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import BudgetCategoryPlan, BudgetMonth, Category, Merchant, Transaction
+from app.models import (
+    AppSetting,
+    BudgetCategoryPlan,
+    BudgetMonth,
+    Category,
+    Merchant,
+    Transaction,
+)
 
 
 @dataclass
@@ -35,6 +42,21 @@ def _next_month(value: date) -> date:
     if value.month == 12:
         return date(value.year + 1, 1, 1)
     return date(value.year, value.month + 1, 1)
+
+
+def _month_end(value: date) -> date:
+    return _next_month(_month_start(value)) - timedelta(days=1)
+
+
+def resolve_recurring_analysis_anchor(anchor: date | None, *, today: date | None = None) -> date:
+    today = today or datetime.now(UTC).date()
+    if anchor is None:
+        return today
+    if anchor.year == today.year and anchor.month == today.month:
+        return max(anchor, today)
+    if anchor < _month_start(today):
+        return _month_end(anchor)
+    return today
 
 
 def _period_bounds(period: str, anchor: date) -> tuple[date, date]:
@@ -138,12 +160,12 @@ def _expense_totals_by_category(db: Session, start: date, end: date) -> dict[int
         .where(Transaction.posted_at < end_dt)
         .where(Transaction.amount < 0)
         .where(Transaction.transfer_id.is_(None))
-        .where(
-            or_(Category.system_kind.is_(None), Category.system_kind != "transfer")
-        )
+        .where(or_(Category.system_kind.is_(None), Category.system_kind != "transfer"))
         .group_by(Transaction.category_id)
     ).all()
-    return {category_id: float(total or 0) for category_id, total in rows if category_id is not None}
+    return {
+        category_id: float(total or 0) for category_id, total in rows if category_id is not None
+    }
 
 
 def _income_and_spend_for_month(db: Session, start: date) -> tuple[float, float]:
@@ -177,7 +199,9 @@ def _recent_average_by_category(db: Session, month_start: date, months: int) -> 
         for _ in range(offset):
             target = target.replace(day=1) - timedelta(days=1)
             target = date(target.year, target.month, 1)
-        month_totals = _expense_totals_by_category(db, target, _next_month(target) - timedelta(days=1))
+        month_totals = _expense_totals_by_category(
+            db, target, _next_month(target) - timedelta(days=1)
+        )
         for category_id, amount in month_totals.items():
             totals[category_id] += amount
     return {category_id: round(total / months, 2) for category_id, total in totals.items()}
@@ -209,7 +233,9 @@ def _family_rollup(
         if row["is_essential"]:
             bucket["essential_planned"] = float(bucket["essential_planned"]) + row["planned_amount"]
         else:
-            bucket["discretionary_planned"] = float(bucket["discretionary_planned"]) + row["planned_amount"]
+            bucket["discretionary_planned"] = (
+                float(bucket["discretionary_planned"]) + row["planned_amount"]
+            )
 
     for family, bucket in family_map.items():
         actual = family_actuals.get(family, 0.0)
@@ -241,7 +267,9 @@ def get_budget_month_snapshot(db: Session, month: date) -> dict:
         plan.category_id: plan
         for plan in (
             db.execute(
-                select(BudgetCategoryPlan).join(BudgetMonth).where(BudgetMonth.month_start == month_start)
+                select(BudgetCategoryPlan)
+                .join(BudgetMonth)
+                .where(BudgetMonth.month_start == month_start)
             )
             .scalars()
             .all()
@@ -250,7 +278,9 @@ def get_budget_month_snapshot(db: Session, month: date) -> dict:
         )
     }
 
-    actuals = _expense_totals_by_category(db, month_start, _next_month(month_start) - timedelta(days=1))
+    actuals = _expense_totals_by_category(
+        db, month_start, _next_month(month_start) - timedelta(days=1)
+    )
     last_month = month_start.replace(day=1) - timedelta(days=1)
     last_month_start = date(last_month.year, last_month.month, 1)
     last_month_actuals = _expense_totals_by_category(
@@ -294,9 +324,11 @@ def get_budget_month_snapshot(db: Session, month: date) -> dict:
                 "last_month_actual": round(last_month_actuals.get(info.id, 0.0), 2),
                 "avg_3_month_actual": round(avg_3_month_actuals.get(info.id, 0.0), 2),
                 "is_fixed": bool(plan.is_fixed) if plan else _default_fixed(info.path),
-                "is_essential": bool(plan.is_essential)
-                if plan
-                else _default_essential(info.family_name, info.spend_bucket),
+                "is_essential": (
+                    bool(plan.is_essential)
+                    if plan
+                    else _default_essential(info.family_name, info.spend_bucket)
+                ),
                 "rollover_mode": plan.rollover_mode if plan else "none",
             }
         )
@@ -320,12 +352,12 @@ def get_budget_month_snapshot(db: Session, month: date) -> dict:
         "income_target": income_target,
         "starting_cash": starting_cash,
         "planned_savings": planned_savings,
-        "suggested_income_target": round(sum(recent_income) / len(recent_income), 2)
-        if recent_income
-        else 0.0,
-        "suggested_planned_savings": round(sum(recent_surplus) / len(recent_surplus), 2)
-        if recent_surplus
-        else 0.0,
+        "suggested_income_target": (
+            round(sum(recent_income) / len(recent_income), 2) if recent_income else 0.0
+        ),
+        "suggested_planned_savings": (
+            round(sum(recent_surplus) / len(recent_surplus), 2) if recent_surplus else 0.0
+        ),
         "leftover_strategy": current_month.leftover_strategy if current_month else "unassigned",
         "income_available": income_available,
         "planned_spending": planned_spending,
@@ -468,7 +500,9 @@ def get_budget_period_summary(db: Session, *, period: str, anchor: date) -> dict
             "start": point_start,
             "end": point_end,
             "total": round(sum(family_totals.values()), 2),
-            "families": {family: round(family_totals.get(family, 0.0), 2) for family in top_families},
+            "families": {
+                family: round(family_totals.get(family, 0.0), 2) for family in top_families
+            },
         }
         for point_start, point_end, label, family_totals in reversed(history_points)
     ]
@@ -528,6 +562,7 @@ def _subscription_cadence(avg_days: float) -> tuple[str, float] | None:
 
 
 def get_recurring_payment_candidates(db: Session, *, anchor: date) -> dict:
+    anchor = resolve_recurring_analysis_anchor(anchor)
     categories = list(db.execute(select(Category)).scalars())
     category_by_id = {category.id: category for category in categories}
     lookback_start = anchor - timedelta(days=365)
@@ -536,8 +571,13 @@ def get_recurring_payment_candidates(db: Session, *, anchor: date) -> dict:
         select(Transaction, Category, Merchant)
         .outerjoin(Category, Category.id == Transaction.category_id)
         .outerjoin(Merchant, Merchant.id == Transaction.merchant_id)
-        .where(Transaction.posted_at >= datetime.combine(lookback_start, datetime.min.time(), tzinfo=UTC))
-        .where(Transaction.posted_at < datetime.combine(lookback_end, datetime.min.time(), tzinfo=UTC))
+        .where(
+            Transaction.posted_at
+            >= datetime.combine(lookback_start, datetime.min.time(), tzinfo=UTC)
+        )
+        .where(
+            Transaction.posted_at < datetime.combine(lookback_end, datetime.min.time(), tzinfo=UTC)
+        )
         .where(Transaction.amount < 0)
         .where(Transaction.is_pending.is_(False))
         .where(Transaction.transfer_id.is_(None))
@@ -545,7 +585,9 @@ def get_recurring_payment_candidates(db: Session, *, anchor: date) -> dict:
         .order_by(Transaction.posted_at.asc())
     ).all()
 
-    grouped: dict[str, list[tuple[Transaction, Category | None, Merchant | None]]] = defaultdict(list)
+    grouped: dict[str, list[tuple[Transaction, Category | None, Merchant | None]]] = defaultdict(
+        list
+    )
     for txn, category, merchant in rows:
         label = _subscription_group_label(
             merchant.name_canonical if merchant else None,
@@ -556,12 +598,38 @@ def get_recurring_payment_candidates(db: Session, *, anchor: date) -> dict:
     entries: list[dict] = []
     review_entries: list[dict] = []
     cancel_keywords = {
-        "netflix", "spotify", "hulu", "disney", "youtube", "prime", "max",
-        "apple", "icloud", "audible", "patreon", "peacock", "paramount",
-        "gym", "membership", "subscription", "chatgpt", "openai", "adobe",
-        "microsoft", "google one", "dropbox", "canva",
+        "netflix",
+        "spotify",
+        "hulu",
+        "disney",
+        "youtube",
+        "prime",
+        "max",
+        "apple",
+        "icloud",
+        "audible",
+        "patreon",
+        "peacock",
+        "paramount",
+        "gym",
+        "membership",
+        "subscription",
+        "chatgpt",
+        "openai",
+        "adobe",
+        "microsoft",
+        "google one",
+        "dropbox",
+        "canva",
     }
-    essential_families = {"Housing", "Utilities", "Insurance", "Debt", "Healthcare", "Transportation"}
+    essential_families = {
+        "Housing",
+        "Utilities",
+        "Insurance",
+        "Debt",
+        "Healthcare",
+        "Transportation",
+    }
     variable_essential_labels = {"pnm electric", "starlink", "universal waste systems"}
 
     for items in grouped.values():
@@ -579,7 +647,11 @@ def get_recurring_payment_candidates(db: Session, *, anchor: date) -> dict:
                 family_name = "Uncategorized"
             else:
                 category_name = latest_category.name
-                parent = category_by_id.get(latest_category.parent_id) if latest_category.parent_id else None
+                parent = (
+                    category_by_id.get(latest_category.parent_id)
+                    if latest_category.parent_id
+                    else None
+                )
                 family_name = parent.name if parent is not None else latest_category.name
             amount = round(abs(float(latest_txn.amount)), 2)
             review_entries.append(
@@ -625,10 +697,16 @@ def get_recurring_payment_candidates(db: Session, *, anchor: date) -> dict:
                     family_name = "Uncategorized"
                 else:
                     category_name = latest_category.name
-                    parent = category_by_id.get(latest_category.parent_id) if latest_category.parent_id else None
+                    parent = (
+                        category_by_id.get(latest_category.parent_id)
+                        if latest_category.parent_id
+                        else None
+                    )
                     family_name = parent.name if parent is not None else latest_category.name
                 avg_preview = round(mean(amounts), 2)
-                category_bucket = latest_category.spend_bucket if latest_category is not None else None
+                category_bucket = (
+                    latest_category.spend_bucket if latest_category is not None else None
+                )
                 review_entries.append(
                     {
                         "label": label,
@@ -640,7 +718,8 @@ def get_recurring_payment_candidates(db: Session, *, anchor: date) -> dict:
                         "estimated_monthly_cost": round(avg_preview * monthly_factor, 2),
                         "last_amount": round(abs(float(latest_txn.amount)), 2),
                         "last_posted_at": latest_txn.posted_at.date(),
-                        "next_expected_at": latest_txn.posted_at.date() + timedelta(days=round(avg_days)),
+                        "next_expected_at": latest_txn.posted_at.date()
+                        + timedelta(days=round(avg_days)),
                         "is_cancel_candidate": category_bucket != "essential",
                         "review_reason": "Not enough history to confirm a stable recurring pattern",
                     }
@@ -705,18 +784,46 @@ def get_recurring_payment_candidates(db: Session, *, anchor: date) -> dict:
             }
         )
 
-    entries.sort(key=lambda item: (item["is_cancel_candidate"], item["estimated_monthly_cost"]), reverse=True)
+    entries.sort(
+        key=lambda item: (item["is_cancel_candidate"], item["estimated_monthly_cost"]), reverse=True
+    )
     review_entries.sort(key=lambda item: item["estimated_monthly_cost"], reverse=True)
     cancel_candidates = [entry for entry in entries if entry["is_cancel_candidate"]]
     essential_candidates = [entry for entry in entries if not entry["is_cancel_candidate"]]
 
     return {
         "as_of": anchor,
-        "estimated_monthly_total": round(sum(entry["estimated_monthly_cost"] for entry in entries), 2),
+        "estimated_monthly_total": round(
+            sum(entry["estimated_monthly_cost"] for entry in entries), 2
+        ),
         "estimated_monthly_cancelable": round(
             sum(entry["estimated_monthly_cost"] for entry in cancel_candidates), 2
         ),
-        "cancel_candidates": cancel_candidates[:8],
-        "essential_candidates": essential_candidates[:8],
-        "review_candidates": review_entries[:8],
+        "cancel_candidates": cancel_candidates,
+        "essential_candidates": essential_candidates,
+        "review_candidates": review_entries,
     }
+
+
+def refresh_recurring_payment_analysis(
+    db: Session, *, anchor: date | None = None, now: datetime | None = None
+) -> dict:
+    now = now or datetime.now(UTC)
+    snapshot = get_recurring_payment_candidates(db, anchor=anchor or now.date())
+    values = {
+        "recurring_last_refreshed_at": now.isoformat(),
+        "recurring_last_as_of": snapshot["as_of"].isoformat(),
+        "recurring_last_candidate_count": str(
+            len(snapshot["cancel_candidates"])
+            + len(snapshot["essential_candidates"])
+            + len(snapshot["review_candidates"])
+        ),
+    }
+    for key, value in values.items():
+        setting = db.execute(select(AppSetting).where(AppSetting.key == key)).scalar_one_or_none()
+        if setting is None:
+            db.add(AppSetting(key=key, value=value))
+        else:
+            setting.value = value
+    db.commit()
+    return snapshot

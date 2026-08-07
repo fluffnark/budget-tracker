@@ -1,13 +1,25 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Account, Category, ClassificationRule, Transaction, Transfer
+from app.models import (
+    Account,
+    AppSetting,
+    Category,
+    ClassificationRule,
+    Transaction,
+    Transfer,
+)
+from app.services.budgeting import (
+    get_recurring_payment_candidates,
+    resolve_recurring_analysis_anchor,
+)
 
 
 def _claim_and_sync(client):
@@ -36,7 +48,9 @@ def test_idempotent_ingestion_no_duplicates(client, db_session: Session):
     assert len(count1) == len(count2)
 
 
-def test_simplefin_shared_account_is_deduplicated(client, db_session: Session, fixture_path, fixture_backup):
+def test_simplefin_shared_account_is_deduplicated(
+    client, db_session: Session, fixture_path, fixture_backup
+):
     payload = {
         "accounts": [
             {
@@ -89,12 +103,18 @@ def test_simplefin_shared_account_is_deduplicated(client, db_session: Session, f
 
     _claim_and_sync(client)
 
-    accounts = db_session.execute(
-        select(Account).where(Account.name == "Wealthfront Cash")
-    ).scalars().all()
-    transactions = db_session.execute(
-        select(Transaction).where(Transaction.description_norm.like("%INTEREST PAYMENT%"))
-    ).scalars().all()
+    accounts = (
+        db_session.execute(select(Account).where(Account.name == "Wealthfront Cash"))
+        .scalars()
+        .all()
+    )
+    transactions = (
+        db_session.execute(
+            select(Transaction).where(Transaction.description_norm.like("%INTEREST PAYMENT%"))
+        )
+        .scalars()
+        .all()
+    )
 
     assert len(accounts) == 1
     assert accounts[0].provider_account_id == "wealthfront-cash-shared-wrapper"
@@ -145,9 +165,11 @@ def test_simplefin_duplicate_payload_signature_is_deduplicated(
 
     _claim_and_sync(client)
 
-    accounts = db_session.execute(
-        select(Account).where(Account.name == "Joint 3.30% APY (2095)")
-    ).scalars().all()
+    accounts = (
+        db_session.execute(select(Account).where(Account.name == "Joint 3.30% APY (2095)"))
+        .scalars()
+        .all()
+    )
 
     assert len(accounts) == 1
     assert set(accounts[0].provider_meta["simplefin_alias_ids"]) == {
@@ -200,9 +222,13 @@ def test_simplefin_distinct_name_suffix_accounts_are_not_deduplicated(
 
     _claim_and_sync(client)
 
-    accounts = db_session.execute(
-        select(Account).where(Account.name.like("Joint 3.30% APY%")).order_by(Account.name)
-    ).scalars().all()
+    accounts = (
+        db_session.execute(
+            select(Account).where(Account.name.like("Joint 3.30% APY%")).order_by(Account.name)
+        )
+        .scalars()
+        .all()
+    )
 
     assert [account.name for account in accounts] == [
         "Joint 3.30% APY (0630)",
@@ -474,7 +500,9 @@ def test_reports_exclude_transfers_from_spend(client):
 def test_sankey_groups_parent_and_leaf_categories(client, db_session: Session):
     _claim_and_sync(client)
 
-    groceries_id = db_session.execute(select(Category.id).where(Category.name == "Groceries")).scalar_one()
+    groceries_id = db_session.execute(
+        select(Category.id).where(Category.name == "Groceries")
+    ).scalar_one()
     utilities_id = db_session.execute(
         select(Category.id).where(Category.name == "Utilities/Internet")
     ).scalar_one()
@@ -525,6 +553,64 @@ def test_transfer_review_endpoints_removed(client):
 
     assert client.get("/api/transfers").status_code == 404
     assert client.patch("/api/transfers/1", json={"status": "confirmed"}).status_code == 404
+
+
+def test_recurring_anchor_uses_fresh_current_month_window():
+    today = date(2026, 8, 7)
+
+    assert resolve_recurring_analysis_anchor(date(2026, 8, 1), today=today) == today
+    assert resolve_recurring_analysis_anchor(date(2026, 7, 1), today=today) == date(2026, 7, 31)
+    assert resolve_recurring_analysis_anchor(date(2026, 9, 1), today=today) == today
+
+
+def test_recurring_returns_all_detected_candidates(client, db_session: Session):
+    _claim_and_sync(client)
+    account = db_session.execute(select(Account).limit(1)).scalar_one()
+    category = db_session.execute(
+        select(Category).where(Category.name == "Entertainment")
+    ).scalar_one()
+
+    for index in range(9):
+        for month in (1, 2, 3):
+            posted = datetime(2026, month, 5, tzinfo=UTC)
+            description = f"SUBSCRIPTION SERVICE {index:02d}"
+            db_session.add(
+                Transaction(
+                    id=str(uuid4()),
+                    account_id=account.id,
+                    provider_txn_id=None,
+                    posted_at=posted,
+                    amount=-(10 + index),
+                    currency="USD",
+                    description_raw=description,
+                    description_norm=description,
+                    is_pending=False,
+                    merchant_id=None,
+                    category_id=category.id,
+                    transfer_id=None,
+                    ingestion_hash=f"recurring-{index}-{month}",
+                )
+            )
+    db_session.commit()
+
+    snapshot = get_recurring_payment_candidates(db_session, anchor=date(2026, 4, 1))
+    labels = {item["label"] for item in snapshot["cancel_candidates"]}
+
+    assert len([label for label in labels if label.startswith("SUBSCRIPTION SERVICE")]) == 9
+
+
+def test_sync_refreshes_recurring_analysis_marker(client, db_session: Session):
+    result = _claim_and_sync(client)
+
+    assert "recurring_candidates" in result
+    refreshed_at = db_session.execute(
+        select(AppSetting.value).where(AppSetting.key == "recurring_last_refreshed_at")
+    ).scalar_one_or_none()
+    candidate_count = db_session.execute(
+        select(AppSetting.value).where(AppSetting.key == "recurring_last_candidate_count")
+    ).scalar_one_or_none()
+    assert refreshed_at
+    assert candidate_count is not None
 
 
 def test_suggest_excludes_categorized_and_transfers_by_default(client, db_session: Session):
